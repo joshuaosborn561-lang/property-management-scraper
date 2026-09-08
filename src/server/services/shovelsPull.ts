@@ -161,7 +161,7 @@ export async function shovelsPull(opts: ShovelsPullInput) {
   if (!dryRun && !opts.fetchPage && !hasShovelsApi()) {
     return {
       ok: false,
-      error: 'No Shovels API key. Set one with shovels_set_api_key (confirm=true).',
+      error: 'No PermitStack API key. Set one with permitstack_set_api_key (alias shovels_set_api_key, confirm=true).',
     };
   }
 

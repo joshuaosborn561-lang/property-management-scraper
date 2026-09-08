@@ -40,7 +40,7 @@ export async function setShovelsApiKey(opts: {
   });
   if (result.ok) {
     result.assistant_instructions =
-      'Key is set. Never repeat the full key in chat. Show only the masked fingerprint, then call shovels_estimate_credits if they want a credit quote.';
+      'PermitStack key is set. Never repeat the full key in chat. Show only the masked fingerprint, then call permitstack_estimate_credits (alias shovels_estimate_credits).';
   }
   return result;
 }
@@ -48,3 +48,11 @@ export async function setShovelsApiKey(opts: {
 export async function clearShovelsApiKey(opts: { set_by?: string } = {}): Promise<Record<string, unknown>> {
   return clearAppSetting({ key: 'shovels_api_key', set_by: opts.set_by });
 }
+
+/** PermitStack key — stored in the existing shovels_api_key slot so persist RPCs keep working. */
+export const getPermitstackApiKey = getShovelsApiKey;
+export const hasPermitstackApi = hasShovelsApi;
+export const permitstackKeyStatus = shovelsKeyStatus;
+export const getPermitstackKeyStatus = getShovelsKeyStatus;
+export const setPermitstackApiKey = setShovelsApiKey;
+export const clearPermitstackApiKey = clearShovelsApiKey;

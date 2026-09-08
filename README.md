@@ -5,9 +5,9 @@ GitHub: https://github.com/joshuaosborn561-lang/permits-GCs
 
 SalesGlider MCP for public **permit + parcel** records — not a people-resolver:
 
-1. **Shovels commercial contractors** (~6,124 DFW GCs) — cached CSV
-2. **Shovels API key from Claude** — Cayden can set or change it with `shovels_set_api_key`
-3. **Shovels API credit estimates** — live `include_count`; quote free (pages) and paid (companies)
+1. **PermitStack commercial contractors** — live `GET /v1/contractors/search` plus a cached DFW CSV (~6,124)
+2. **PermitStack API key from Claude** — Cayden can set or change it with `permitstack_set_api_key` (alias `shovels_set_api_key`)
+3. **PermitStack request estimates** — 1 HTTP request per search page (100/day on the free tier)
 4. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
 5. **Appraisal-district commercial parcels** — DCAD / TAD / CCAD bulk extracts
 6. **Operator rollup** — group shell LLCs by normalised tax-bill mailing address (`build_operators`)
@@ -24,11 +24,13 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | Tool | Purpose |
 |------|---------|
 | `health` | Readiness + `supabase_project` + loaded counts |
-| `shovels_api_key_status` | Masked fingerprint of the live Shovels key |
-| `shovels_set_api_key` | Cayden sets/changes the key from Claude (`confirm=true`) |
-| `shovels_clear_api_key` | Drop the Claude override and fall back to env |
-| `shovels_estimate_credits` | How many Shovels API credits a filter would cost |
-| `permits_contractors_*` | Shovels GC summary/query/sample/export |
+| `permitstack_api_key_status` / `shovels_api_key_status` | Masked fingerprint of the live PermitStack key |
+| `permitstack_set_api_key` / `shovels_set_api_key` | Cayden sets/changes the key from Claude (`confirm=true`) |
+| `permitstack_clear_api_key` / `shovels_clear_api_key` | Drop the Claude override and fall back to env |
+| `permitstack_estimate_credits` / `shovels_estimate_credits` | How many PermitStack HTTP requests a filter would cost |
+| `permitstack_pull` / `shovels_pull` | Live contractor pull into the local store |
+| `permitstack_pull_calling_list` / `shovels_pull_calling_list` | Live pull → Supabase calling list |
+| `permits_contractors_*` | Cached + pulled GC summary/query/sample/export |
 | `save_calling_list` | Write a filtered DFW pull to Supabase (`owner` e.g. `cayden`) |
 | `import_calling_list_csv` | Import Houston/Harris or any external contractor CSV |
 | `list_calling_lists` / `query_calling_list` | Find and filter saved lists (`exclude_national_chains`, `dial_status=owner_cell`) |
@@ -45,11 +47,11 @@ Prefer save/sync + SQL `select count(*)` over dumping rows into chat.
 
 Claude connector: `https://workspace-production-4702.up.railway.app/mcp` (authless).
 
-## Shovels credits
+## PermitStack requests
 
-`shovels_estimate_credits` calls Shovels `include_count` (one cheap request per city/county) and returns **both** meters: free/trial **pages** and paid **companies**. Last Dallas + Tarrant commercial job was **65 pages / ~6,400 companies**. A Railway `SHOVELS_API_KEY` still works as fallback.
+Live pulls use [PermitStack](https://permit-stack.com/docs/) (`X-API-Key`, OpenAPI at `https://api.permit-stack.com/public-openapi.json`). Geos resolve locally — there is no Shovels `geo_id`. Cities/counties call `GET /v1/contractors/search?city=&state=`; ZIPs use `GET /v1/permits/search?zip_code=`. `permitstack_estimate_credits` (alias `shovels_estimate_credits`) probes one page per geo and quotes `credits.estimated_requests`. Phone/email are on contractor profiles (Developer plan and up).
 
-Cayden can change the live key from Claude with `shovels_set_api_key` (`confirm=true`). The server never echoes the full key — only a masked fingerprint. The value is stored in `permit_parcel.app_settings` and reloaded on restart. This MCP is authless, so anyone with the connector URL can set the key.
+Set `PERMITSTACK_API_KEY` on Railway, or have Cayden paste it with `permitstack_set_api_key` (`confirm=true`). The server never echoes the full key. The value is stored in `permit_parcel.app_settings` (`shovels_api_key` slot) and reloaded on restart.
 
 ## Calling lists (Cayden)
 

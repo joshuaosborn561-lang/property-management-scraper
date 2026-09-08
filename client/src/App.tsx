@@ -30,7 +30,7 @@ export default function App() {
         <p className="eyebrow">SalesGlider</p>
         <h1>Permit &amp; Parcel</h1>
         <p className="lede">
-          Shovels commercial GCs · credit estimates · Supabase calling lists · DCAD / TAD / CCAD
+          PermitStack GCs · request estimates · Supabase calling lists · DCAD / TAD / CCAD
           parcels. Propwire cascade removed.
         </p>
       </header>

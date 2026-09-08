@@ -2,7 +2,7 @@
   "name": "permits-gcs",
   "version": "2.0.0",
   "private": true,
-  "description": "Permit & Parcel MCP (permits-GCs) — Shovels commercial GCs, credit estimates, calling lists, DCAD/TAD/CCAD parcels",
+  "description": "Permit & Parcel MCP (permits-GCs) — PermitStack commercial GCs, request estimates, calling lists, DCAD/TAD/CCAD parcels",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joshuaosborn561-lang/permits-GCs.git"
@@ -24,7 +24,7 @@
     "mcp": "tsx src/mcp/stdio.ts",
     "mcp:stdio": "node dist/mcp/stdio.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/server/lib/texasComptroller.test.ts src/server/lib/contactScore.test.ts src/server/services/importCallingList.test.ts src/server/services/shovelsGeoTargets.test.ts src/server/services/shovelsPull.test.ts"
+    "test": "tsx --test src/server/lib/texasComptroller.test.ts src/server/lib/contactScore.test.ts src/server/lib/permitstack.test.ts src/server/services/importCallingList.test.ts src/server/services/shovelsGeoTargets.test.ts src/server/services/shovelsPull.test.ts"
   },
   "engines": {
     "node": ">=20"

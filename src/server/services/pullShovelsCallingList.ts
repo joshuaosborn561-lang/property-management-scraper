@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { nationalChainHit } from '../lib/nationalChain.js';
+import { hydratePermitstackProfiles } from '../lib/permitstack.js';
 import {
   GeoResolutionError,
   hasShovelsApi,
@@ -118,12 +119,12 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
   const geoLabel = targets.map((t) => t.place).join('+');
   const name =
     opts.name?.trim() ||
-    `Shovels live · ${geoLabel.replace(/_/g, ' ')} · ${owner}`;
+    `PermitStack live · ${geoLabel.replace(/_/g, ' ')} · ${owner}`;
 
   if (!hasShovelsApi()) {
     return {
       ok: false,
-      error: 'No Shovels API key. Cayden can set one with shovels_set_api_key (confirm=true).',
+      error: 'No PermitStack API key. Cayden can set one with permitstack_set_api_key (alias shovels_set_api_key, confirm=true).',
       ...supabaseTargetMeta(),
     };
   }
@@ -233,6 +234,17 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     });
   }
 
+  let hydrateRequests = 0;
+  if (opts.has_phone === true && byId.size) {
+    const hydrated = await hydratePermitstackProfiles([...byId.values()], {
+      max: Math.min(200, maxRecords),
+    });
+    hydrateRequests = hydrated.requests;
+    creditsSpent += hydrated.requests;
+    byId.clear();
+    for (const item of hydrated.items) byId.set(item.id, item);
+  }
+
   const filtered = applyFilters([...byId.values()], opts);
   const contractors = filtered.map(toContractor);
   const jobId = `permit-live-${randomUUID().slice(0, 8)}`;
@@ -318,12 +330,13 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     ok: true,
     ...supabaseTargetMeta(),
     supabase_schema: SCHEMA,
-    list: { id: jobId, name, owner, source: 'shovels_live', row_count: inserted },
+    list: { id: jobId, name, owner, source: 'permitstack_live', row_count: inserted },
     rows_inserted: inserted,
     rows_deleted: deleted,
     unique_before_filters: byId.size,
     unique_after_filters: contractors.length,
     pages_fetched: pages,
+    hydrate_requests: hydrateRequests,
     credits_spent_approx: creditsSpent,
     truncated: anyTruncated,
     max_records: maxRecords,
@@ -331,6 +344,6 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     export_bytes: exportBytes,
     window: { ...window, property_type: propertyType },
     assistant_instructions:
-      'Live Shovels list is in Supabase — any US geo is allowed (no timezone / TX-only gate). Tell Cayden the list id. Filter with query_calling_list. Score / enrich as usual. Do not dump rows into chat.',
+      'Live PermitStack list is in Supabase — any US geo is allowed. Tell Cayden the list id. Filter with query_calling_list. Phone/email hydration ran only when has_phone=true (capped at 200 profiles). Do not dump rows into chat.',
   };
 }

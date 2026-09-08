@@ -531,7 +531,7 @@ export function shovelsContractorsSummary(): Record<string, unknown> {
     loaded: all.length > 0,
     load_error: loadError,
     unique_contractors: all.length,
-    source: 'Shovels commercial contractors (permit activity)',
+    source: 'PermitStack / cached commercial contractors (permit activity)',
     filter: meta.filter ?? 'property_type=commercial',
     date_from: meta.date_from ?? null,
     date_to: meta.date_to ?? null,

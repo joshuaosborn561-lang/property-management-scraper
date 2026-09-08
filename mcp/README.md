@@ -6,8 +6,10 @@ Remote MCP: `https://workspace-production-4702.up.railway.app/mcp` (authless Str
 ## Tools
 
 - `health`
-- `shovels_api_key_status` / `shovels_set_api_key` / `shovels_clear_api_key` — Cayden changes the Shovels key from Claude (never echo the full key)
-- `shovels_estimate_credits` — live `include_count`; quote free pages **and** paid companies
+- `permitstack_api_key_status` / `permitstack_set_api_key` / `permitstack_clear_api_key` — Cayden changes the PermitStack key from Claude (never echo the full key). `shovels_*` names are aliases.
+- `permitstack_estimate_credits` / `shovels_estimate_credits` — 1 HTTP request per contractor-search page
+- `permitstack_pull` / `shovels_pull` — live PermitStack pull into the local store
+- `permitstack_pull_calling_list` / `shovels_pull_calling_list` — live pull → Supabase calling list
 - `permits_contractors_summary|query|sample|get|export_csv`
 - `save_calling_list` / `list_calling_lists` / `query_calling_list` / `import_calling_list_csv` — persist + filter for Cayden (`dial_status=owner_cell`); CSV for non-DFW
 - `score_calling_list` / `match_texas_officers` / `lookup_line_type` / `owner_people_search` / `record_owner_cell` — owner-cell enrichment (resume via only_unscored / only_unmatched)

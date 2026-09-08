@@ -3,10 +3,10 @@ export const SERVER_INSTRUCTIONS = `
 
 You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub repo \`permits-GCs\`). Jobs:
 
-1. **Live Shovels commercial GC pulls for ANY US market** (East coast, West coast, any city/county/state) via \`shovels_pull_calling_list\` — **not timezone-restricted, not TX-only**
-2. **Shovels DFW cache** (Dallas / Fort Worth / Rockwall) — free via \`save_calling_list\`
-3. **Shovels API key** — Cayden can set or change it from Claude (\`shovels_set_api_key\`)
-4. **Shovels API credit estimates** — answer "how many credits would this cost?"
+1. **Live PermitStack commercial GC pulls for ANY US market** via \`permitstack_pull_calling_list\` (alias \`shovels_pull_calling_list\`) — **not timezone-restricted, not TX-only**
+2. **DFW cache** (Dallas / Fort Worth / Rockwall) — free via \`save_calling_list\`
+3. **PermitStack API key** — Cayden can set or change it from Claude (\`permitstack_set_api_key\`, alias \`shovels_set_api_key\`)
+4. **PermitStack request estimates** — 1 HTTP request per search page (100/day on free)
 5. **Calling lists in Supabase** — persist pulls so Cayden can filter them for cold calling
 6. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
 7. **Operator rollup** by normalised mailing address (\`build_operators\`) — free

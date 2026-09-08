@@ -71,6 +71,18 @@ describe('pickGeo / geoNameMatches', () => {
     assert.equal(geo, null);
   });
 
+  it('resolveShovelsGeo synthesizes PermitStack county ids without a live geo index', async () => {
+    const geo = await resolveShovelsGeo({
+      kind: 'county',
+      q: 'Denton',
+      state: 'TX',
+    });
+    assert.equal(geo.geo_id, 'county:denton:tx');
+    assert.equal(geo.kind, 'county');
+    assert.equal(geo.state, 'TX');
+    assert.match(geo.name, /Denton County/i);
+  });
+
   it('resolveShovelsGeo uses recorded Denton county fixture (no live API)', async () => {
     const fixture = JSON.parse(
       readFileSync(join(process.cwd(), 'data/shovels_fixtures/counties_search_denton.json'), 'utf8'),

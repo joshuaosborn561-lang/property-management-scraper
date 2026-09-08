@@ -205,7 +205,7 @@ export function mountMcpHttp(app: Express): void {
         build_operators: 'POST /api/build-operators',
         sync_to_supabase: 'POST /api/sync-to-supabase',
       },
-      note: 'Authless MCP. Live contractor pulls use PermitStack (shovels_* tools are aliases). Cayden sets the key with permitstack_set_api_key. Never echo the full key.',
+      note: 'Authless MCP. Live contractor pulls use PermitStack (shovels_* tools are aliases). The PermitStack key is already on the server — do not ask anyone to rotate it. Never echo the full key.',
     });
   });
 }

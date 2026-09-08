@@ -124,7 +124,7 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
   if (!hasShovelsApi()) {
     return {
       ok: false,
-      error: 'No PermitStack API key. Cayden can set one with permitstack_set_api_key (alias shovels_set_api_key, confirm=true).',
+      error: 'PermitStack key is not loaded. Check PERMITSTACK_API_KEY on the server. Do not ask Cayden to paste a key.',
       ...supabaseTargetMeta(),
     };
   }

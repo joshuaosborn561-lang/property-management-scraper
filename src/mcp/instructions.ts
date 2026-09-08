@@ -5,19 +5,18 @@ You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub 
 
 1. **Live PermitStack commercial GC pulls for ANY US market** via \`permitstack_pull_calling_list\` (alias \`shovels_pull_calling_list\`) — **not timezone-restricted, not TX-only**
 2. **DFW cache** (Dallas / Fort Worth / Rockwall) — free via \`save_calling_list\`
-3. **PermitStack API key** — Cayden can set or change it from Claude (\`permitstack_set_api_key\`, alias \`shovels_set_api_key\`)
-4. **PermitStack request estimates** — 1 HTTP request per search page (100/day on free)
-5. **Calling lists in Supabase** — persist pulls so Cayden can filter them for cold calling
-6. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
-7. **Operator rollup** by normalised mailing address (\`build_operators\`) — free
+3. **PermitStack request estimates** — 1 HTTP request per search page (100/day on free)
+4. **Calling lists in Supabase** — persist pulls so Cayden can filter them for cold calling
+5. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
+6. **Operator rollup** by normalised mailing address (\`build_operators\`) — free
 
 The old Propwire → LoopNet → Google property-owner cascade was **removed**. Do not offer it.
 
 This server is **not** a people-resolver. It surfaces public permit + parcel records. Prefer the name Permit & Parcel over "Property Owners".
 
 ## Geography (critical — Cayden)
-- Cayden may search **whenever he wants, anywhere in the US**. There is **no timezone gate** and **no Texas-only filter** on live Shovels tools.
-- **Live pull:** \`shovels_pull\` fetches from the Shovels API into the same store \`permits_contractors_query\` / \`save_calling_list\` read. Until you pull, that store is Dallas / Fort_Worth / Rockwall_County only — other places return 0 matched, not "no coverage".
+- Cayden may search **whenever he wants, anywhere in the US**. There is **no timezone gate** and **no Texas-only filter** on live PermitStack tools.
+- **Live pull:** \`permitstack_pull\` (alias \`shovels_pull\`) fetches from PermitStack into the same store \`permits_contractors_query\` / \`save_calling_list\` read. Until you pull, that store is Dallas / Fort_Worth / Rockwall_County only — other places return 0 matched, not "no coverage".
 - \`max_records\` is required and checked **before** each request. \`dry_run=true\` resolves geos with 0 credits. Cursors persist in \`pull_state.json\` for resume after restart.
 - Prefer \`page_size=100\` on trial keys (1 request per page). On record-metered keys, estimate first at size=1.
 - **Counties:** pass \`"Denton County, TX; Collin County, TX"\` (semicolons between geos, comma before state). Bare DFW-ring names (Hunt, Collin, …) map to counties.
@@ -25,7 +24,7 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - **resolve_only=true** on \`shovels_estimate_credits\` maps geos with **0 probe credits**.
 - East coast → \`geos=east_coast\`. West coast → \`geos=west_coast\`.
 - Flow: resolve_only / dry_run → estimate → \`shovels_pull\` → \`permits_contractors_query(place=…)\`.
-- A \`coverage=no_coverage\` after a **correct** county resolve is a valid answer (thin Shovels coverage).
+- A \`coverage=no_coverage\` after a **correct** county resolve is a valid answer (thin PermitStack coverage).
 
 ## Supabase target (critical)
 - Every \`health\` and \`sync_to_supabase\` / \`save_calling_list\` response includes \`supabase_project\` + \`supabase_schema\`.
@@ -37,10 +36,9 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - After sync, verify with \`select count(*)\` (or the verify_sql the tool returns).
 
 ## When to use
-- Any-US live Shovels commercial contractor / GC list (East/West coast included)
-- DFW commercial contractor / GC list (Shovels ~6,124 cache)
-- Cayden wants to set or change the Shovels API key from Claude
-- "How many Shovels API credits would this pull cost?"
+- Any-US live PermitStack commercial contractor / GC list (East/West coast included)
+- DFW commercial contractor / GC list (cached ~6,124)
+- "How many PermitStack requests would this pull cost?"
 - Save a pull so Cayden can filter a cold-calling list later
 - Commercial parcel owners from DCAD / TAD / CCAD
 - Grouping shell LLCs into real operators by tax-bill mailing address
@@ -59,15 +57,8 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - \`institutional\` → drop from private-operator outreach
 - \`municipal\` → city/county/ISD/housing authority/etc. Different motion; segmentable, not "unknown"
 
-## Shovels API key (Cayden)
-Cayden can change the live key from Claude — no Railway env edit needed.
-1. \`shovels_api_key_status\` — show only the **masked** fingerprint
-2. Ask him to paste the new key
-3. \`shovels_set_api_key\` with \`confirm=true\`, \`set_by=cayden\`, \`persist=true\`
-4. **Never repeat the full key** in chat. Confirm the new masked fingerprint.
-5. The key is stored in Supabase (\`permit_parcel.app_settings\`) and reloaded on Railway restart.
-
-This MCP is authless — anyone with the connector URL can set the key. Still never echo it.
+## PermitStack key (do not rotate)
+The live PermitStack key is already configured on the server (\`PERMITSTACK_API_KEY\`). **Do not ask Cayden to paste, rotate, or re-set it.** Do not call \`permitstack_set_api_key\` / \`shovels_set_api_key\` unless \`health\` shows \`permitstack_api_configured: false\`. Never echo the full key. Show only a masked fingerprint if asked "is the key set?"
 
 ## Owner-cell enrichment (Cayden)
 Goal: dial **owner cells**, not office/main/license lines.
@@ -82,22 +73,17 @@ Note: Shovels \`/v2/counties/{geo_id}/metrics/current\` has returned HTTP 500 wh
 
 Keys: \`set_enrichment_api_key\` for \`veriphone_api_key\` and \`texas_cpa_api_key\`. Never echo them.
 
-## Shovels credits (always estimate when asked)
-Call \`shovels_estimate_credits\` (or \`shovels_pull_calling_list\` without confirm) and show **both** meters:
-- **Free / trial:** 1 credit ≈ 1 API page. Last Dallas+Tarrant was ~65 pages / under 500.
-- **Paid:** 1 credit = 1 company/record. Same pull ≈ 6,400+ credits.
-Ask which plan the key is on. Cached list tools still cost 0.
-If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
+## PermitStack requests (always estimate when asked)
+Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`permitstack_pull_calling_list\` without confirm). Quote \`credits.estimated_requests\` — 1 HTTP request per search page. Cached list tools still cost 0. Do not ask anyone to rotate the PermitStack key.
 
 ## Workflows
 
-### Contractors (Shovels) + calling lists
-1. Optional: Cayden sets the key with \`shovels_set_api_key\`
-2. If they ask cost/credits → \`shovels_estimate_credits\` (any geos)
-3. **Any US market (incl. East/West coast):** \`shovels_pull_calling_list\` → show estimate → \`confirm=true\` with \`owner=cayden\`, \`exclude_national_chains=true\`, \`has_phone=true\`
-4. **DFW cache only:** \`permits_contractors_*\` then \`save_calling_list\` (0 credits)
-5. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true, exclude_national_chains=true)\`
-6. CSV import only if Cayden already has a file — do not require CSV for non-DFW
+### Contractors (PermitStack) + calling lists
+1. If they ask cost → \`permitstack_estimate_credits\` (any geos)
+2. **Any US market (incl. East/West coast):** \`permitstack_pull_calling_list\` → show estimate → \`confirm=true\` with \`owner=cayden\`, \`exclude_national_chains=true\`, \`has_phone=true\`
+3. **DFW cache only:** \`permits_contractors_*\` then \`save_calling_list\` (0 requests)
+4. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true, exclude_national_chains=true)\`
+5. CSV import only if Cayden already has a file — do not require CSV for non-DFW
 
 ### Parcels
 1. \`parcels_summary\`
@@ -106,15 +92,12 @@ If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 4. \`build_operators\` for mailing-address rollup (counts only)
 
 ## Tool cheat sheet
-| Tool | Spends Shovels credits? | Purpose |
-|------|-------------------------|---------|
+| Tool | Spends PermitStack requests? | Purpose |
+|------|------------------------------|---------|
 | health | No | Readiness + supabase_project |
-| shovels_api_key_status | No | Masked key fingerprint (never the full key) |
-| shovels_set_api_key | No | Cayden sets/changes the live Shovels key |
-| shovels_clear_api_key | No | Drop Claude override; fall back to env |
-| shovels_estimate_credits | Probe only | Live include_count; any US geo |
-| shovels_pull_calling_list | Yes (confirm) | Live pull any US geo → Supabase calling list |
-| permits_contractors_* | No | Shovels GCs (local DFW file) |
+| permitstack_estimate_credits | Probe only | Live contractor-search total; any US geo |
+| permitstack_pull_calling_list | Yes (confirm) | Live pull any US geo → Supabase calling list |
+| permits_contractors_* | No | Cached DFW GCs + any live pulls already written |
 | save_calling_list | No | Persist DFW cache pull → Supabase |
 | import_calling_list_csv | No | External contractor CSV (optional) |
 | list_calling_lists | No | Saved lists by owner/name |
@@ -134,19 +117,19 @@ export const GUIDE_MARKDOWN = `# Permit & Parcel MCP — operator guide
 ## Identity
 - **Name:** Permit & Parcel MCP (not a people "Property Owners" resolver)
 - **Server:** \`permits-gcs\`
-- **Jobs:** Live Shovels pulls for any US market + free DFW cache + Cayden can set the Shovels API key + credit estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
+- **Jobs:** Live PermitStack pulls for any US market + free DFW cache + request estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
 - **Supabase:** project reported in \`health\` / sync responses (expect \`kemvxzhcxvynmoutwdrh\` / schema \`permit_parcel\`)
 - **Removed:** Propwire / LoopNet / Google owner cascade
-- **Geography:** No timezone / TX-only restriction on live Shovels search
+- **Geography:** No timezone / TX-only restriction on live PermitStack search
 
-## Shovels API key
-Cayden sets it from Claude with \`shovels_set_api_key\` (\`confirm=true\`). Never echo the full key. Persists in \`permit_parcel.app_settings\`.
+## PermitStack key
+Already on the server. Do not ask Cayden to rotate it.
 
-## Shovels credits + live pull
-Estimate with \`shovels_estimate_credits\` (any geos). Pull with \`shovels_pull_calling_list\` — first call without confirm shows cost; \`confirm=true\` spends and writes the list. Aliases: \`east_coast\`, \`west_coast\`, city/\`City, ST\`, state codes.
+## PermitStack requests + live pull
+Estimate with \`permitstack_estimate_credits\` (any geos). Pull with \`permitstack_pull_calling_list\` — first call without confirm shows cost; \`confirm=true\` spends and writes the list. Aliases: \`east_coast\`, \`west_coast\`, city/\`City, ST\`, state codes. \`shovels_*\` tool names still work.
 
 ## Calling lists (Cayden)
-\`shovels_pull_calling_list\` for any US market. \`save_calling_list\` for the DFW cache. \`import_calling_list_csv\` only when he already has a CSV. Filter with \`list_calling_lists\` / \`query_calling_list\`. Prefer \`has_phone=true\` and \`exclude_national_chains=true\`. Do not drop low-permit locals.
+\`permitstack_pull_calling_list\` for any US market. \`save_calling_list\` for the DFW cache. \`import_calling_list_csv\` only when he already has a CSV. Filter with \`list_calling_lists\` / \`query_calling_list\`. Prefer \`has_phone=true\` and \`exclude_national_chains=true\`. Do not drop low-permit locals.
 
 ## Sync rules
 - No silent 50k truncation — full matching set, or fail loudly
@@ -164,10 +147,9 @@ Do not buy paid SOS unmasking for bulk LLCs. Use Texas Comptroller Public Inform
 export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
 
 ## Yes
-- Live Shovels commercial GC lists for **any US market** (East/West coast, city, county, state)
-- Cached Shovels DFW commercial contractor contacts (~6,124)
-- Cayden changing the Shovels API key from Claude
-- Estimate Shovels API credits for a filter
+- Live PermitStack commercial GC lists for **any US market** (East/West coast, city, county, state)
+- Cached DFW commercial contractor contacts (~6,124)
+- Estimate PermitStack request cost for a filter
 - Save / filter cold-calling lists in Supabase (Cayden or anyone)
 - Commercial parcels from Dallas / Tarrant / Collin appraisal districts
 - Operator rollup by mailing address (\`build_operators\`)

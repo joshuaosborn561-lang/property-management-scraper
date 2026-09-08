@@ -325,7 +325,7 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     permitstack_api_configured: hasShovelsApi(),
     key_hint: hasShovelsApi()
       ? null
-      : 'No PermitStack key on this server. Cayden can set one with permitstack_set_api_key (alias shovels_set_api_key, confirm=true). Never echo the full key.',
+      : 'PermitStack key missing from this process. It should come from PERMITSTACK_API_KEY — do not ask Cayden to rotate keys.',
     live_error: liveError,
     spends_shovels_credits: live && !resolveOnly,
     probe_credits_spent: resolveOnly ? 0 : live ? probeCredits : 0,
@@ -381,6 +381,6 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
       ? 'Show each resolved_name / resolved_kind / resolved_geo_id. If any error, fix the geos string (use "Denton County, TX" — not "Denton County; TX; …" with bare state slots — or geo_level=county, or a ZIP list) before probing. Do not probe until resolution is clean.'
       : hasShovelsApi()
         ? 'PermitStack bills per HTTP request (not per contractor). Quote credits.estimated_requests (search pages). Profile hydration for phone/email is extra 1 request each and is Developer-plan. Cached DFW tools still cost 0.'
-        : 'No PermitStack key is configured. Offer permitstack_set_api_key (alias shovels_set_api_key). Never echo the full key.',
+        : 'PermitStack key is not loaded. Check PERMITSTACK_API_KEY on the server. Do not ask Cayden to paste a key.',
   };
 }

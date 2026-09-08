@@ -115,7 +115,7 @@ async function healthPayload() {
     shovels_contractors_loaded: loadShovelsContractors().length,
     parcels_loaded: loadParcels().length,
     when_to_use:
-      'PermitStack commercial GCs (including request estimates); change the PermitStack API key from Claude; DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden).',
+      'PermitStack commercial GCs (including request estimates); DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden). The PermitStack key is already on the server — do not ask anyone to rotate it.',
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
@@ -132,7 +132,7 @@ export function createPermitParcelMcpServer(): McpServer {
       version: '2.0.0',
       title: 'Permit & Parcel MCP (permits-GCs)',
       description:
-        'USE FOR: (1) Live PermitStack commercial GC pulls for ANY US market via permitstack_pull_calling_list (alias shovels_pull_calling_list); (2) free DFW cache (~6,124); (3) request estimates; (4) Cayden sets PermitStack API key; (5) Supabase calling lists; (6) DCAD/TAD/CCAD parcels + build_operators. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS. Never echo a full API key.',
+        'USE FOR: (1) Live PermitStack commercial GC pulls for ANY US market via permitstack_pull_calling_list (alias shovels_pull_calling_list); (2) free DFW cache (~6,124); (3) request estimates; (4) Supabase calling lists; (5) DCAD/TAD/CCAD parcels + build_operators. The PermitStack key is already configured — do not ask Cayden to rotate it. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS. Never echo a full API key.',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -1202,12 +1202,12 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — Shovels contractors.
+            text: `Permit & Parcel MCP — PermitStack contractors.
 Request: "${request || 'Summarize the contractor file'}"
-1) If they want to change the Shovels key: shovels_set_api_key (confirm=true). Never echo the full key.
-2) Any US market (East/West coast, city, state): shovels_pull_calling_list — estimate first, then confirm=true. No timezone / TX-only gate.
-3) If they ask cost only: shovels_estimate_credits (show free pages AND paid companies)
-4) DFW cache: permits_contractors_* then save_calling_list (0 credits). Use exclude_national_chains=true.
+1) Do not ask anyone to rotate the PermitStack key. It is already on the server.
+2) Any US market (East/West coast, city, state): permitstack_pull_calling_list — estimate first, then confirm=true.
+3) If they ask cost only: permitstack_estimate_credits (quote estimated_requests)
+4) DFW cache: permits_contractors_* then save_calling_list (0 requests). Use exclude_national_chains=true.
 5) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)
 6) verify with select count(*) — never dump all rows into chat.`,
           },
@@ -1219,8 +1219,8 @@ Request: "${request || 'Summarize the contractor file'}"
   server.registerPrompt(
     'pp_set_shovels_key',
     {
-      title: 'Set or change the Shovels API key',
-      description: 'Use when Cayden wants to paste a new Shovels API key from Claude.',
+      title: 'PermitStack key status (do not rotate)',
+      description: 'The PermitStack key is already on the server. Do not ask Cayden to paste a new one.',
       argsSchema: {
         request: z.string().optional(),
       },
@@ -1231,13 +1231,11 @@ Request: "${request || 'Summarize the contractor file'}"
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — Shovels API key.
-Request: "${request || 'Cayden wants to set or change the Shovels API key'}"
-1) shovels_api_key_status — show only the masked fingerprint
-2) Ask Cayden to paste the new key in chat
-3) shovels_set_api_key with confirm=true, set_by=cayden, persist=true
-4) Never repeat the full key. Confirm the new masked fingerprint.
-5) Optionally shovels_estimate_credits to verify the key works.`,
+            text: `Permit & Parcel MCP — PermitStack key.
+Request: "${request || 'Is the PermitStack key set?'}"
+1) health or permitstack_api_key_status — show only the masked fingerprint
+2) Do NOT ask Cayden to paste or rotate the key. It is already configured.
+3) If they want a pull, go to permitstack_estimate_credits / permitstack_pull_calling_list.`,
           },
         },
       ],

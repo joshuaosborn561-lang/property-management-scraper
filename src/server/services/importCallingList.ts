@@ -104,7 +104,7 @@ export function csvRowsToLeads(csv: string): {
       phone: cell(row, cols.phone),
       website: cell(row, cols.website),
       city: cell(row, cols.city),
-      state: cell(row, cols.state) || 'TX',
+      state: cell(row, cols.state),
       zip: cell(row, cols.zip),
       rating: '',
       reviews: permitCount != null ? String(permitCount) : '',

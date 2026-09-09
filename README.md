@@ -49,7 +49,7 @@ Claude connector: `https://workspace-production-4702.up.railway.app/mcp` (authle
 
 ## PermitStack requests
 
-Live pulls use [PermitStack](https://permit-stack.com/docs/) (`X-API-Key`, OpenAPI at `https://api.permit-stack.com/public-openapi.json`). Geos resolve locally — there is no Shovels `geo_id`. Cities/counties call `GET /v1/contractors/search?city=&state=`; ZIPs use `GET /v1/permits/search?zip_code=`. `permitstack_estimate_credits` (alias `shovels_estimate_credits`) probes one page per geo and quotes `credits.estimated_requests`. Phone/email are on contractor profiles (Developer plan and up).
+Live pulls use [PermitStack](https://permit-stack.com/docs/) (`X-API-Key`, OpenAPI at `https://api.permit-stack.com/public-openapi.json`). Geos resolve locally — there is no Shovels `geo_id`. Cities call `GET /v1/contractors/search?city=&state=`. Counties use `GET /v1/permits/search?jurisdiction=` (not `city=Hillsborough`). ZIPs use `zip_code` and hydrate via `contractor_id`. `permitstack_estimate_credits` (alias `shovels_estimate_credits`) probes one page per geo and quotes `credits.estimated_requests`. Phone/email are on contractor profiles (Developer plan and up); hydration self-paces under 60 req/min.
 
 Set `PERMITSTACK_API_KEY` on Railway, or have Cayden paste it with `permitstack_set_api_key` (`confirm=true`). The server never echoes the full key. The value is stored in `permit_parcel.app_settings` (`shovels_api_key` slot) and reloaded on restart.
 

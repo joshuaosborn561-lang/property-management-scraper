@@ -243,11 +243,15 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
             probe_credits: probe.headers.credits_request,
             credits_remaining_after: probe.headers.credits_remaining,
             no_coverage: probe.no_coverage,
-            coverage: probe.no_coverage
-              ? 'no_coverage'
-              : probe.count_unreliable
-                ? 'count_unreliable'
-                : 'ok',
+            county_query_empty: probe.county_query_empty === true,
+            coverage_error: probe.coverage_error ?? null,
+            coverage: probe.county_query_empty
+              ? 'county_query_empty'
+              : probe.no_coverage
+                ? 'no_coverage'
+                : probe.count_unreliable
+                  ? 'count_unreliable'
+                  : 'ok',
             last_job_pages: hist?.pages ?? null,
             last_job_fetched: hist?.fetched ?? null,
           });
@@ -296,6 +300,7 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
 
   const resolutionFailed = geos.filter((g) => g.ok === false);
   const noCoverage = geos.filter((g) => g.coverage === 'no_coverage');
+  const countyEmpty = geos.filter((g) => g.coverage === 'county_query_empty');
   const places = targets.map((t) => t.place).join(', ');
 
   const creditsUsed =
@@ -376,7 +381,7 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     },
     explanation: resolveOnly
       ? `Resolved ${targets.length} geo(s) with 0 probe credits. ${resolutionFailed.length} failed. Fix failures before probing.`
-      : `Pull for ${places || 'default geos'}: ~${pages} pages / ~${companies} companies. ${resolutionFailed.length} resolution failure(s) were NOT probed. ${noCoverage.length} geo(s) report no_coverage (0 contractors).`,
+      : `Pull for ${places || 'default geos'}: ~${pages} pages / ~${companies} companies. ${resolutionFailed.length} resolution failure(s) were NOT probed. ${countyEmpty.length} county geo(s) returned 0 from jurisdiction search (not a silent city miss). ${noCoverage.length} geo(s) report no_coverage.`,
     assistant_instructions: resolveOnly
       ? 'Show each resolved_name / resolved_kind / resolved_geo_id. If any error, fix the geos string (use "Denton County, TX" — not "Denton County; TX; …" with bare state slots — or geo_level=county, or a ZIP list) before probing. Do not probe until resolution is clean.'
       : hasShovelsApi()

@@ -1,11 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { nationalChainHit } from '../lib/nationalChain.js';
-import { hydratePermitstackProfiles } from '../lib/permitstack.js';
+import {
+  countyJurisdictionError,
+  EMPTY_HYDRATION,
+  hydratePermitstackProfiles,
+  isSyntheticContractorId,
+  permitstackGet,
+  resolveSyntheticContractorIds,
+  type HydrationCounters,
+} from '../lib/permitstack.js';
 import {
   GeoResolutionError,
   hasShovelsApi,
   pullContractorsForGeo,
   resolveShovelsGeo,
+  shovelsSearchContractorsPage,
   type ShovelsApiContractor,
   type ShovelsGeo,
 } from '../lib/shovels.js';
@@ -13,6 +22,7 @@ import { supabaseTargetMeta } from '../lib/supabaseTarget.js';
 import { hasSupabase, SCHEMA } from '../lib/supabase.js';
 import { upsertCallingListMeta } from './callingLists.js';
 import { resolveGeoTargets, type GeoLevelHint, type GeoTarget } from './shovelsGeoTargets.js';
+import { loadPullState, pullJobKey, savePullState } from './shovelsPull.js';
 import { estimateShovelsCredits } from './shovelsCredits.js';
 import { contractorsToCsv, type ShovelsContractor } from './shovelsContractors.js';
 import { replaceLeads, upsertExport, upsertJob } from './syncToSupabase.js';
@@ -40,6 +50,14 @@ export interface PullShovelsCallingListInput {
   owner?: string;
   /** Must be true to spend Shovels credits on a live pull. */
   confirm?: boolean;
+  /** Resume at this PermitStack page (overrides stored cursor). */
+  cursor?: string;
+  /** Skip the first N contractors in fetch order (page = floor(offset/page_size)+1). */
+  offset?: number;
+  /** Clear stored cursors for these geos and start at page 1. */
+  reset_cursor?: boolean;
+  fetchPage?: typeof shovelsSearchContractorsPage;
+  hydrateProfiles?: typeof hydratePermitstackProfiles;
 }
 
 function isoDate(d: Date): string {
@@ -82,18 +100,54 @@ function toContractor(c: ShovelsApiContractor): ShovelsContractor {
   };
 }
 
-function applyFilters(
+/** Chain + permit-count only — safe before profile hydration. */
+export function applyStructuralFilters(
+  items: ShovelsApiContractor[],
+  opts: PullShovelsCallingListInput,
+): ShovelsApiContractor[] {
+  return items.filter((c) => {
+    if (opts.min_permit_count != null && (c.permit_count ?? 0) < opts.min_permit_count) return false;
+    if (opts.max_permit_count != null && (c.permit_count ?? 0) > opts.max_permit_count) return false;
+    if (opts.exclude_national_chains === true && nationalChainHit(c).national_chain) return false;
+    return true;
+  });
+}
+
+/** Phone/email filters — only after hydration. */
+export function applyContactFilters(
   items: ShovelsApiContractor[],
   opts: PullShovelsCallingListInput,
 ): ShovelsApiContractor[] {
   return items.filter((c) => {
     if (opts.has_phone === true && !hasContact(c.phone) && !hasContact(c.primary_phone)) return false;
     if (opts.has_email === true && !hasContact(c.email) && !hasContact(c.primary_email)) return false;
-    if (opts.min_permit_count != null && (c.permit_count ?? 0) < opts.min_permit_count) return false;
-    if (opts.max_permit_count != null && (c.permit_count ?? 0) > opts.max_permit_count) return false;
-    if (opts.exclude_national_chains === true && nationalChainHit(c).national_chain) return false;
     return true;
   });
+}
+
+export function applyFilters(
+  items: ShovelsApiContractor[],
+  opts: PullShovelsCallingListInput,
+): ShovelsApiContractor[] {
+  return applyContactFilters(applyStructuralFilters(items, opts), opts);
+}
+
+export function startCursorForGeo(
+  opts: PullShovelsCallingListInput,
+  persisted: { cursor: string | null; done?: boolean } | undefined,
+  pageSize: number,
+): { cursor: string | null; skip: number; resumed: boolean } {
+  if (opts.cursor && /^\d+$/.test(opts.cursor)) {
+    return { cursor: opts.cursor, skip: 0, resumed: false };
+  }
+  if (opts.offset != null && opts.offset > 0) {
+    const page = Math.floor(opts.offset / pageSize) + 1;
+    return { cursor: String(page), skip: opts.offset % pageSize, resumed: false };
+  }
+  if (persisted && persisted.done !== true && persisted.cursor) {
+    return { cursor: persisted.cursor, skip: 0, resumed: true };
+  }
+  return { cursor: null, skip: 0, resumed: false };
 }
 
 function slugOwner(owner: string): string {
@@ -193,11 +247,28 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     };
   }
 
+  const pageSize = opts.page_size ?? 100;
+  const state = loadPullState();
+  if (opts.reset_cursor === true) {
+    for (const { target: t, geo } of resolved) {
+      const key = pullJobKey({
+        place: t.place,
+        geo_id: geo.geo_id,
+        date_from: window.date_from,
+        date_to: window.date_to,
+        property_type: propertyType,
+      });
+      delete state.jobs[key];
+    }
+    savePullState(state);
+  }
+
   const byId = new Map<string, ShovelsApiContractor>();
   const perGeo: Array<Record<string, unknown>> = [];
   let pages = 0;
   let creditsSpent = 0;
   let anyTruncated = false;
+  const countyErrors: Array<Record<string, unknown>> = [];
 
   for (const { target: t, geo } of resolved) {
     const remaining = maxRecords - byId.size;
@@ -205,47 +276,145 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       anyTruncated = true;
       break;
     }
+    const key = pullJobKey({
+      place: t.place,
+      geo_id: geo.geo_id,
+      date_from: window.date_from,
+      date_to: window.date_to,
+      property_type: propertyType,
+    });
+    const prior = state.jobs[key];
+    const start = startCursorForGeo(opts, prior, pageSize);
     const pulled = await pullContractorsForGeo({
       geo,
       place: t.place,
       permit_from: window.date_from,
       permit_to: window.date_to,
       property_type: propertyType,
-      page_size: opts.page_size ?? 100,
-      max_records: remaining,
+      page_size: pageSize,
+      max_records: remaining + start.skip,
+      start_cursor: start.cursor,
+      fetchPage: opts.fetchPage,
     });
     pages += pulled.pages;
     creditsSpent += pulled.credits_spent;
     if (pulled.truncated) anyTruncated = true;
+    const windowItems = pulled.items.slice(start.skip);
     let added = 0;
-    for (const item of pulled.items) {
+    for (const item of windowItems) {
       if (byId.has(item.id)) continue;
       byId.set(item.id, item);
       added += 1;
     }
+    const countyEmpty = geo.kind === 'county' && pulled.items.length === 0 && !start.resumed;
+    if (countyEmpty) {
+      countyErrors.push({
+        place: t.place,
+        resolved_geo_id: geo.geo_id,
+        resolved_name: geo.name,
+        error: countyJurisdictionError(geo),
+      });
+    }
+    const done = !pulled.truncated && !pulled.next_cursor;
+    state.jobs[key] = {
+      place: t.place,
+      geo_id: geo.geo_id,
+      cursor: pulled.next_cursor,
+      fetched: (prior?.fetched ?? 0) + windowItems.length,
+      done,
+      updated_at: new Date().toISOString(),
+      window: { ...window, property_type: propertyType },
+    };
+    savePullState(state);
     perGeo.push({
       place: t.place,
       requested: t,
       geo,
-      fetched: pulled.items.length,
+      fetched: windowItems.length,
       unique_added: added,
       pages: pulled.pages,
       truncated: pulled.truncated,
+      next_cursor: pulled.next_cursor,
+      resumed_from_cursor: start.resumed,
+      start_cursor: start.cursor,
+      county_query_empty: countyEmpty,
+      coverage: countyEmpty ? 'county_query_empty' : pulled.items.length === 0 ? 'no_coverage' : 'ok',
+      coverage_error: countyEmpty ? countyJurisdictionError(geo) : null,
     });
   }
 
+  if (countyErrors.length && byId.size === 0) {
+    return {
+      ok: false,
+      error: countyErrors.map((e) => e.error).join(' '),
+      county_query_empty: true,
+      per_geo: perGeo,
+      ...supabaseTargetMeta(),
+      assistant_instructions:
+        'County geos query PermitStack jurisdiction, not city=core. Use a city or ZIP list. This is not silent no_coverage.',
+    };
+  }
+
   let hydrateRequests = 0;
+  let hydration: HydrationCounters = { ...EMPTY_HYDRATION };
+  let idResolve = { resolved: 0, unresolved: 0, requests: 0 };
+  const fetchedUnique = byId.size;
+  const preHydrate = applyStructuralFilters([...byId.values()], opts);
+  byId.clear();
+  for (const item of preHydrate) byId.set(item.id, item);
+
   if (opts.has_phone === true && byId.size) {
-    const hydrated = await hydratePermitstackProfiles([...byId.values()], {
-      max: Math.min(200, maxRecords),
+    const synthetic = [...byId.values()].filter((c) => isSyntheticContractorId(c.id));
+    if (synthetic.length) {
+      const resolvedIds = await resolveSyntheticContractorIds([...byId.values()], {
+        get: permitstackGet,
+      });
+      idResolve = {
+        resolved: resolvedIds.resolved,
+        unresolved: resolvedIds.unresolved,
+        requests: resolvedIds.requests,
+      };
+      creditsSpent += resolvedIds.requests;
+      byId.clear();
+      for (const item of resolvedIds.items) byId.set(item.id, item);
+    }
+
+    const stillSynthetic = [...byId.values()].filter((c) => isSyntheticContractorId(c.id));
+    if (stillSynthetic.length === byId.size) {
+      return {
+        ok: false,
+        error:
+          'has_phone=true cannot hydrate this geo: permit rows have name-only ids (no contractor_id) and name search did not resolve them. Use a city geo, or pull without has_phone.',
+        zip_cannot_hydrate: true,
+        unique_before_filters: byId.size,
+        id_resolve: idResolve,
+        hydration: { ...EMPTY_HYDRATION, hydrated_skipped_synthetic_id: stillSynthetic.length },
+        per_geo: perGeo,
+        ...supabaseTargetMeta(),
+      };
+    }
+
+    const hydrateFn = opts.hydrateProfiles ?? hydratePermitstackProfiles;
+    const hydrated = await hydrateFn([...byId.values()], {
+      max: Math.max(byId.size, maxRecords),
     });
+    hydration = {
+      attempted: hydrated.attempted,
+      hydrated_ok: hydrated.hydrated_ok,
+      hydrated_rate_limited: hydrated.hydrated_rate_limited,
+      hydrated_failed: hydrated.hydrated_failed,
+      hydrated_skipped_synthetic_id: hydrated.hydrated_skipped_synthetic_id,
+      requests: hydrated.requests,
+      http_attempts: hydrated.http_attempts,
+      rate_limited: hydrated.rate_limited,
+    };
     hydrateRequests = hydrated.requests;
     creditsSpent += hydrated.requests;
     byId.clear();
     for (const item of hydrated.items) byId.set(item.id, item);
   }
 
-  const filtered = applyFilters([...byId.values()], opts);
+  const filtered = applyContactFilters([...byId.values()], opts);
   const contractors = filtered.map(toContractor);
   const jobId = `permit-live-${randomUUID().slice(0, 8)}`;
   const tags = [
@@ -314,6 +483,8 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       has_phone: opts.has_phone ?? null,
       has_email: opts.has_email ?? null,
       exclude_national_chains: opts.exclude_national_chains ?? null,
+      cursor: opts.cursor ?? null,
+      offset: opts.offset ?? null,
     },
     row_count: inserted,
   });
@@ -333,17 +504,29 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     list: { id: jobId, name, owner, source: 'permitstack_live', row_count: inserted },
     rows_inserted: inserted,
     rows_deleted: deleted,
-    unique_before_filters: byId.size,
+    unique_before_filters: fetchedUnique,
+    unique_after_structural_filters: preHydrate.length,
     unique_after_filters: contractors.length,
     pages_fetched: pages,
     hydrate_requests: hydrateRequests,
+    hydration,
+    id_resolve: idResolve,
+    rate_limited: hydration.rate_limited,
     credits_spent_approx: creditsSpent,
     truncated: anyTruncated,
     max_records: maxRecords,
     per_geo: perGeo,
     export_bytes: exportBytes,
     window: { ...window, property_type: propertyType },
-    assistant_instructions:
-      'Live PermitStack list is in Supabase — any US geo is allowed. Tell Cayden the list id. Filter with query_calling_list. Phone/email hydration ran only when has_phone=true (capped at 200 profiles). Do not dump rows into chat.',
+    resume: {
+      next_cursors: perGeo.map((g) => ({
+        place: g.place,
+        next_cursor: g.next_cursor ?? null,
+        resumed_from_cursor: g.resumed_from_cursor ?? false,
+      })),
+    },
+    assistant_instructions: hydration.rate_limited
+      ? 'Hydration hit the 60 req/min cap. Counters split ok / rate_limited / failed / skipped_synthetic_id. Re-run the same geo to resume from the stored cursor (new contractors). Do not dump rows into chat.'
+      : 'Live PermitStack list is in Supabase. Tell Cayden the list id. Filter with query_calling_list. Hydration runs on this call\'s window after chain/permit filters. A second call on the same geo resumes the cursor. Do not dump rows into chat.',
   };
 }

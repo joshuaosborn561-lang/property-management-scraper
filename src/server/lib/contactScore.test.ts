@@ -70,6 +70,29 @@ describe('computeDialStatus', () => {
     );
   });
 
+  it('promotes a verified mobile with no officer source to mobile_unverified_owner', () => {
+    assert.equal(
+      computeDialStatus({
+        owner_score: 'owner_likely',
+        email_kind: 'other',
+        line_type: 'mobile',
+        officer_match: null,
+        owner_cell: null,
+      }),
+      'mobile_unverified_owner',
+    );
+    assert.equal(
+      computeDialStatus({
+        owner_score: 'owner_likely',
+        email_kind: 'other',
+        line_type: 'mobile',
+        officer_match: 'unavailable',
+        owner_cell: null,
+      }),
+      'mobile_unverified_owner',
+    );
+  });
+
   it('skips invalid line types', () => {
     assert.equal(
       computeDialStatus({

@@ -19,12 +19,13 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - **Live pull:** \`permitstack_pull\` (alias \`shovels_pull\`) fetches from PermitStack into the same store \`permits_contractors_query\` / \`save_calling_list\` read. Until you pull, that store is Dallas / Fort_Worth / Rockwall_County only — other places return 0 matched, not "no coverage".
 - \`max_records\` is required and checked **before** each request. \`dry_run=true\` resolves geos with 0 credits. Cursors persist in \`pull_state.json\` for resume after restart.
 - Prefer \`page_size=100\` on trial keys (1 request per page). On record-metered keys, estimate first at size=1.
-- **Counties:** pass \`"Denton County, TX; Collin County, TX"\` (semicolons between geos, comma before state). Bare DFW-ring names (Hunt, Collin, …) map to counties.
-- **ZIPs:** \`"75001;75035;75201"\` resolve as geo_ids directly.
+- **Counties:** pass \`"Hillsborough County, FL"\` / \`"Denton County, TX"\`. Live search uses PermitStack **jurisdiction**, not \`city=Hillsborough\`. A 0-result county is \`county_query_empty\` (loud error), never silent \`no_coverage\`. Prefer a city (Tampa, FL) or ZIPs when the county jurisdiction is empty.
+- **ZIPs:** \`"75001;75035;75201"\` resolve as geo_ids. Phone hydration needs \`contractor_id\` on the permit (or a name→id resolve). If every row is \`name:\` only, the tool refuses \`has_phone=true\` instead of writing empty phones.
 - **resolve_only=true** on \`shovels_estimate_credits\` maps geos with **0 probe credits**.
 - East coast → \`geos=east_coast\`. West coast → \`geos=west_coast\`.
 - Flow: resolve_only / dry_run → estimate → \`shovels_pull\` → \`permits_contractors_query(place=…)\`.
-- A \`coverage=no_coverage\` after a **correct** county resolve is a valid answer (thin PermitStack coverage).
+- A \`coverage=no_coverage\` after a **city** resolve is a valid answer (thin coverage). A county 0 is \`county_query_empty\`.
+- \`permitstack_pull_calling_list\` stores a per-geo cursor. A second call on the same geo returns **new** contractors. Hydration applies to that call's window (after chain/permit filters), paced under 60 req/min. Counters: \`hydrated_ok\` / \`hydrated_rate_limited\` / \`hydrated_failed\` / \`hydrated_skipped_synthetic_id\`.
 
 ## Supabase target (critical)
 - Every \`health\` and \`sync_to_supabase\` / \`save_calling_list\` response includes \`supabase_project\` + \`supabase_schema\`.
@@ -66,8 +67,8 @@ Goal: dial **owner cells**, not office/main/license lines.
 2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
 3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\` — Texas entities only; skip for out-of-state lists or note it is TX Comptroller.
 4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
-5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match+mobile**. Leftovers (\`agent\` / \`different\` / \`none\`): \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
-6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells.
+5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match+mobile**. Verified mobiles with no officer source (out-of-state) are \`mobile_unverified_owner\`. Leftovers (\`agent\` / \`different\`): \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
+6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells. \`officer_match\` is null until \`match_texas_officers\` runs — never seeded as \`none\`.
 
 Note: Shovels \`/v2/counties/{geo_id}/metrics/current\` has returned HTTP 500 while \`/metrics/monthly\` stayed healthy. Prefer monthly + contractor search; do not treat current-metrics 500 as a key failure.
 

@@ -1,4 +1,5 @@
 import {
+  countyJurisdictionError,
   getPermitstackUsage,
   hasPermitstackApi,
   mapPermitstackContractor,
@@ -47,6 +48,9 @@ export interface ContractorCountProbe {
   headers: ShovelsHeaders;
   /** True when Shovels returned no usable count and empty first page. */
   no_coverage: boolean;
+  /** County jurisdiction search returned 0 — not a silent city miss. */
+  county_query_empty?: boolean;
+  coverage_error?: string | null;
 }
 
 export interface ShovelsApiContractor {
@@ -341,6 +345,9 @@ export async function probeContractorCount(opts: {
   const parsed = parseTotalCount(page.total_count_raw);
   const itemsOnPage = page.items.length;
   const hasMore = Boolean(page.next_cursor);
+  const countyEmpty =
+    opts.geo.kind === 'county' &&
+    (page.county_query_empty === true || (parsed.value === 0 && !hasMore && itemsOnPage === 0));
   return {
     geo: opts.geo,
     total_count: parsed.value,
@@ -352,7 +359,9 @@ export async function probeContractorCount(opts: {
     next_cursor: page.next_cursor,
     count_unreliable: false,
     headers: page.headers,
-    no_coverage: parsed.value === 0 && !hasMore && itemsOnPage === 0,
+    no_coverage: !countyEmpty && parsed.value === 0 && !hasMore && itemsOnPage === 0,
+    county_query_empty: countyEmpty,
+    coverage_error: countyEmpty ? countyJurisdictionError(opts.geo) : null,
   };
 }
 

@@ -691,8 +691,8 @@ NEXT: permits_contractors_query(place="Denton_County") / save_calling_list.`,
     {
       title: 'Live PermitStack pull → Supabase calling list (any US geo)',
       description: `WHEN TO USE: Cayden wants a GC calling list for ANY US market. Alias: permitstack_pull_calling_list.
-WHAT IT DOES: Without confirm=true, returns a request estimate only. With confirm=true, pages PermitStack /v1/contractors/search, writes scrape_leads + calling_lists. has_phone=true hydrates up to 200 profiles for contact fields.
-RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). east_coast / west_coast expand to major metros (not whole coasts) to control spend; use geos=CA for statewide.
+WHAT IT DOES: Without confirm=true, returns a request estimate only. With confirm=true, pages PermitStack /v1/contractors/search (cities) or /v1/permits/search (county jurisdiction / ZIP), writes scrape_leads + calling_lists. has_phone=true hydrates THIS window's profiles (paced under 60 req/min; 429s retry). Chain/permit filters run before hydration.
+RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). Re-run the same geo to resume the stored cursor (new contractors). Pass cursor/offset/reset_cursor to control paging. east_coast / west_coast expand to major metros.
 NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
       inputSchema: {
         geos: z
@@ -719,6 +719,9 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
           .boolean()
           .optional()
           .describe('Must be true to spend Shovels credits and write the list'),
+        cursor: z.string().optional().describe('PermitStack page to resume from (overrides stored cursor)'),
+        offset: z.number().int().min(0).optional().describe('Skip first N contractors in fetch order'),
+        reset_cursor: z.boolean().optional().describe('Clear stored cursor and start at page 1'),
       },
       annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
     },
@@ -755,6 +758,9 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
         name: z.string().optional(),
         owner: z.string().optional(),
         confirm: z.boolean().optional(),
+        cursor: z.string().optional(),
+        offset: z.number().int().min(0).optional(),
+        reset_cursor: z.boolean().optional(),
       },
       annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
     },
@@ -882,9 +888,16 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
         has_phone: z.boolean().optional().describe('true = dialable rows only'),
         has_email: z.boolean().optional(),
         dial_status: z
-          .enum(['owner_cell', 'owner_landline', 'company_line', 'needs_enrichment', 'skip'])
+          .enum([
+            'owner_cell',
+            'owner_landline',
+            'company_line',
+            'mobile_unverified_owner',
+            'needs_enrichment',
+            'skip',
+          ])
           .optional()
-          .describe('After enrichment. owner_cell = Cayden can dial'),
+          .describe('After enrichment. owner_cell = officer-confirmed mobile; mobile_unverified_owner = verified mobile, no officer source'),
         min_permit_count: minPermitCount,
         max_permit_count: maxPermitCount,
         exclude_national_chains: excludeNationalChains,
@@ -1002,7 +1015,7 @@ WHAT IT DOES: Flags owner-likely vs company-line. $0. Default only_unscored=true
     {
       title: 'Match Texas Comptroller officers (free PIR)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
-WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/agent/error so re-runs advance — do not use next_offset while that filter is on. Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner).`,
+WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/agent/error/unavailable so re-runs advance — do not use next_offset while that filter is on. Never-attempted is officer_match=null (not none). Out-of-state rows are marked unavailable. Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner).`,
       inputSchema: {
         list_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional().describe('Default 80. Max 100; one call should finish within the 48s budget.'),
@@ -1029,7 +1042,7 @@ WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s s
       title: 'Veriphone line type (cell vs landline)',
       description: `WHEN TO USE: After scoring + officers, to mark Shovels phones as mobile/landline/voip.
 COST: ~$2.40 per 1,000 (Veriphone Standard). First call without confirm=true returns the $ estimate only.
-RULES: Show the estimate. confirm=true to spend. Default cap 50. only_unknown=true (default) resumes — omit offset. Non-NANP phones are marked invalid (no spend) so the queue drains. match+mobile sets dial_status=owner_cell. Never echo the API key.`,
+RULES: Show the estimate. confirm=true to spend. Default cap 50. only_unknown=true (default) resumes — omit offset. Non-NANP phones are marked invalid (no spend) so the queue drains. match+mobile sets dial_status=owner_cell; verified mobile with no officer source sets mobile_unverified_owner. Never echo the API key.`,
       inputSchema: {
         list_id: z.string().min(1),
         confirm: z.boolean().optional().describe('Must be true to spend credits'),

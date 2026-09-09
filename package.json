@@ -24,7 +24,7 @@
     "mcp": "tsx src/mcp/stdio.ts",
     "mcp:stdio": "node dist/mcp/stdio.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/server/lib/texasComptroller.test.ts src/server/lib/contactScore.test.ts src/server/lib/permitstack.test.ts src/server/services/importCallingList.test.ts src/server/services/shovelsGeoTargets.test.ts src/server/services/shovelsPull.test.ts"
+    "test": "tsx --test src/server/lib/texasComptroller.test.ts src/server/lib/contactScore.test.ts src/server/lib/permitstack.test.ts src/server/services/importCallingList.test.ts src/server/services/shovelsGeoTargets.test.ts src/server/services/shovelsPull.test.ts src/server/services/pullShovelsCallingList.test.ts"
   },
   "engines": {
     "node": ">=20"

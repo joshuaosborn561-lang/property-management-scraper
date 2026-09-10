@@ -26,7 +26,8 @@ export const config = {
   shovelsBaseUrl: env('PERMITSTACK_BASE_URL', 'https://api.permit-stack.com'),
   veriphoneApiKey: env('VERIPHONE_API_KEY'),
   texasCpaApiKey: env('TEXAS_CPA_API_KEY'),
-  floridaSosApiKey: env('FLORIDA_SOS_API_KEY'),
+  // Railway vars are case-sensitive; the live service currently stores this lowercase.
+  floridaSosApiKey: env('FLORIDA_SOS_API_KEY') || env('florida_sos_api_key'),
 };
 
 export type AppConfig = typeof config;

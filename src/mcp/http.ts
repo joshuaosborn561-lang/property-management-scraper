@@ -150,6 +150,9 @@ export function mountMcpHttp(app: Express): void {
       },
       tools: [
         'health',
+        'permitstack_api_key_status',
+        'permitstack_set_api_key',
+        'permitstack_clear_api_key',
         'shovels_api_key_status',
         'shovels_set_api_key',
         'shovels_clear_api_key',
@@ -165,7 +168,12 @@ export function mountMcpHttp(app: Express): void {
         'permits_contractors_sample',
         'permits_contractors_get',
         'permits_contractors_export_csv',
+        'permitstack_estimate_credits',
         'shovels_estimate_credits',
+        'permitstack_pull',
+        'shovels_pull',
+        'permitstack_pull_calling_list',
+        'shovels_pull_calling_list',
         'save_calling_list',
         'list_calling_lists',
         'query_calling_list',
@@ -197,7 +205,7 @@ export function mountMcpHttp(app: Express): void {
         build_operators: 'POST /api/build-operators',
         sync_to_supabase: 'POST /api/sync-to-supabase',
       },
-      note: 'Authless MCP. Cayden can set the Shovels key with shovels_set_api_key. Never echo the full key. Prefer sync_to_supabase + select count(*).',
+      note: 'Authless MCP. Live contractor pulls use PermitStack (shovels_* tools are aliases). The PermitStack key is already on the server — do not ask anyone to rotate it. Never echo the full key.',
     });
   });
 }

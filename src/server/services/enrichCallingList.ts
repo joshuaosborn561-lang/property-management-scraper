@@ -134,38 +134,53 @@ async function fetchContacts(listId: string, opts: FetchContactsOpts = {}): Prom
   };
 }
 
-async function persistRows(rows: EnrichmentRow[]): Promise<string | null> {
+function isTexasRow(row: EnrichmentRow): boolean {
+  const st = String(row.state || '').trim().toUpperCase();
+  return st === 'TX' || st === 'TEXAS';
+}
+
+async function persistRows(
+  rows: EnrichmentRow[],
+  opts: { writeOfficerMatch?: boolean } = {},
+): Promise<string | null> {
   if (!rows.length) return null;
+  const writeOfficer = opts.writeOfficerMatch === true;
   const { error } = await getSupabase().rpc('upsert_permit_parcel_enrichment', {
     p_secret: ingestSecret(),
-    p_rows: rows.map((r) => ({
-      list_id: r.list_id,
-      lead_id: r.lead_id,
-      place_id: r.place_id ?? null,
-      company_name: r.company_name ?? null,
-      contact_name: r.contact_name ?? null,
-      phone: r.phone ?? null,
-      email: r.email ?? null,
-      owner_score: r.owner_score ?? null,
-      flags: Array.isArray(r.flags) ? r.flags : [],
-      email_kind: r.email_kind ?? null,
-      phone_line_type: r.phone_line_type ?? null,
-      phone_carrier: r.phone_carrier ?? null,
-      officer_name: r.officer_name ?? null,
-      officer_title: r.officer_title ?? null,
-      officer_street: r.officer_street ?? null,
-      officer_city: r.officer_city ?? null,
-      officer_state: r.officer_state ?? null,
-      officer_zip: r.officer_zip ?? null,
-      officer_match: r.officer_match ?? null,
-      taxpayer_id: r.taxpayer_id ?? null,
-      owner_search_name: r.owner_search_name ?? null,
-      people_search: r.people_search ?? null,
-      owner_cell: r.owner_cell ?? null,
-      owner_cell_source: r.owner_cell_source ?? null,
-      dial_status: r.dial_status ?? 'needs_enrichment',
-      evidence: r.evidence ?? null,
-    })),
+    p_rows: rows.map((r) => {
+      const payload: Record<string, unknown> = {
+        list_id: r.list_id,
+        lead_id: r.lead_id,
+        place_id: r.place_id ?? null,
+        company_name: r.company_name ?? null,
+        contact_name: r.contact_name ?? null,
+        phone: r.phone ?? null,
+        email: r.email ?? null,
+        owner_score: r.owner_score ?? null,
+        flags: Array.isArray(r.flags) ? r.flags : [],
+        email_kind: r.email_kind ?? null,
+        phone_line_type: r.phone_line_type ?? null,
+        phone_carrier: r.phone_carrier ?? null,
+        officer_name: r.officer_name ?? null,
+        officer_title: r.officer_title ?? null,
+        officer_street: r.officer_street ?? null,
+        officer_city: r.officer_city ?? null,
+        officer_state: r.officer_state ?? null,
+        officer_zip: r.officer_zip ?? null,
+        taxpayer_id: r.taxpayer_id ?? null,
+        owner_search_name: r.owner_search_name ?? null,
+        people_search: r.people_search ?? null,
+        owner_cell: r.owner_cell ?? null,
+        owner_cell_source: r.owner_cell_source ?? null,
+        dial_status: r.dial_status ?? 'needs_enrichment',
+        evidence: r.evidence ?? null,
+      };
+      // Never-attempted stays SQL NULL. Score must not seed officer_match='none'.
+      if (writeOfficer || (r.officer_match != null && r.officer_match !== '')) {
+        payload.officer_match = r.officer_match;
+      }
+      return payload;
+    }),
   });
   return error ? error.message : null;
 }
@@ -223,7 +238,7 @@ export async function scoreCallingList(opts: {
       evidence: scoredRow.evidence,
     });
   });
-  const persistError = await persistRows(scored);
+  const persistError = await persistRows(scored, { writeOfficerMatch: false });
   const remaining = onlyUnscored
     ? Math.max(0, fetched.remaining_unscored - scored.length)
     : fetched.remaining_unscored;
@@ -281,6 +296,7 @@ export async function matchTexasOfficers(opts: {
   let different = 0;
   let none = 0;
   let agent = 0;
+  let unavailable = 0;
   let errors = 0;
   let timedOut = false;
   const deadline = Date.now() + OFFICER_BUDGET_MS;
@@ -290,6 +306,15 @@ export async function matchTexasOfficers(opts: {
     if (Date.now() > deadline) {
       timedOut = true;
       break;
+    }
+    if (!isTexasRow(row)) {
+      row.officer_match = 'unavailable';
+      appendEvidence(row, 'No Texas officer source for this state');
+      applyDial(row);
+      processed.push(row);
+      await persistRows([row], { writeOfficerMatch: true });
+      unavailable += 1;
+      continue;
     }
     try {
       const hits = await searchFranchiseEntities(row.company_name || '');
@@ -338,7 +363,7 @@ export async function matchTexasOfficers(opts: {
       }
       applyDial(row);
       processed.push(row);
-      await persistRows([row]);
+      await persistRows([row], { writeOfficerMatch: true });
       await sleep(OFFICER_ROW_GAP_MS);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'officer lookup failed';
@@ -348,7 +373,7 @@ export async function matchTexasOfficers(opts: {
         row.officer_match = 'error';
         applyDial(row);
         processed.push(row);
-        await persistRows([row]);
+        await persistRows([row], { writeOfficerMatch: true });
       }
       errors += 1;
     }
@@ -374,11 +399,11 @@ export async function matchTexasOfficers(opts: {
     // only_unmatched filters in SQL; offset stays unused. null avoids "0 while has_more".
     next_offset: onlyUnmatched ? null : fetched.offset + processed.length,
     resume_with: onlyUnmatched ? { only_unmatched: true, limit } : { offset: fetched.offset + processed.length, limit },
-    by_officer_match: { match: matched, different, none, agent, errors },
+    by_officer_match: { match: matched, different, none, agent, unavailable, errors },
     sample: sample(processed),
     assistant_instructions: remaining
-      ? `Processed ${processed.length}; ${remaining} still unmatched. Re-run match_texas_officers(only_unmatched=true, limit=${limit}). Do not pass next_offset while only_unmatched=true — the unmatched filter is the pager. Sole-prop / person-name companies with no franchise-tax account are officer_match=none (not error). Do not dump the list.`
-      : 'Officer names are public PIR data. If match=different, Google the officer name (not the Shovels PM). Next lookup_line_type or owner_people_search.',
+      ? `Processed ${processed.length}; ${remaining} still unmatched. Re-run match_texas_officers(only_unmatched=true, limit=${limit}). Do not pass next_offset while only_unmatched=true — the unmatched filter is the pager. Sole-prop / person-name companies with no franchise-tax account are officer_match=none (not error). Out-of-state rows are officer_match=unavailable. Do not dump the list.`
+      : 'Officer names are public PIR data. Out-of-state = unavailable (not none). Next lookup_line_type — verified mobiles without an officer source become dial_status=mobile_unverified_owner.',
   };
 }
 
@@ -533,8 +558,8 @@ export async function lookupLineTypes(opts: {
     sample: sample(processed),
     assistant_instructions:
       remaining > 0
-        ? `Looked up ${looked} (${markedInvalid} invalid phones marked, no Veriphone spend). ${remaining} still unknown. Re-run lookup_line_type(only_unknown=true, confirm=true, limit=${want}) — omit offset. match+mobile → dial_status=owner_cell; agent/different still need people-search. Do not dump the list.`
-        : 'Show line-type counts and $ spent. query_calling_list(dial_status=owner_cell) for match+mobile. Leftovers (agent/different/none) go to owner_people_search.',
+        ? `Looked up ${looked} (${markedInvalid} invalid phones marked, no Veriphone spend). ${remaining} still unknown. Re-run lookup_line_type(only_unknown=true, confirm=true, limit=${want}) — omit offset. match+mobile → owner_cell; verified mobile with no officer source → mobile_unverified_owner. agent/different still need people-search. Do not dump the list.`
+        : 'Show line-type counts and $ spent. query_calling_list(dial_status=owner_cell or mobile_unverified_owner). Leftovers (agent/different) go to owner_people_search.',
   };
 }
 

@@ -8,6 +8,7 @@ export type DialStatus =
   | 'owner_cell'
   | 'owner_landline'
   | 'company_line'
+  | 'mobile_unverified_owner'
   | 'needs_enrichment'
   | 'skip';
 
@@ -155,5 +156,10 @@ export function computeDialStatus(opts: {
   if (mobile && identity) return 'owner_cell';
   if (landline && identity) return 'owner_landline';
   if (opts.owner_score === 'office_likely' || opts.line_type === 'toll_free') return 'company_line';
+  // Out-of-state / no officer source: a verified mobile is dialable, but not
+  // owner-confirmed. Do not strand Florida (etc.) rows as needs_enrichment.
+  const officerBlocksPhone =
+    opts.officer_match === 'agent' || opts.officer_match === 'different';
+  if (mobile && !officerBlocksPhone) return 'mobile_unverified_owner';
   return 'needs_enrichment';
 }

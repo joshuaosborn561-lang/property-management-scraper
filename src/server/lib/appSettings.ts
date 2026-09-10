@@ -13,7 +13,7 @@ type Slot = {
 };
 
 const envFallback: Record<SettingKey, string> = {
-  shovels_api_key: config.shovelsApiKey,
+  shovels_api_key: config.permitstackApiKey || config.shovelsApiKey,
   veriphone_api_key: config.veriphoneApiKey,
   texas_cpa_api_key: config.texasCpaApiKey,
 };
@@ -115,6 +115,7 @@ export async function enrichmentKeysStatus() {
   await loadAppSettings();
   return {
     ok: true,
+    permitstack_api_key: settingStatus('shovels_api_key'),
     shovels_api_key: settingStatus('shovels_api_key'),
     veriphone_api_key: settingStatus('veriphone_api_key'),
     texas_cpa_api_key: settingStatus('texas_cpa_api_key'),
@@ -134,6 +135,11 @@ async function persistSetting(key: SettingKey, value: string, by: string): Promi
   return error ? error.message : null;
 }
 
+function canonicalSettingKey(key: string): string {
+  if (key === 'permitstack_api_key') return 'shovels_api_key';
+  return key;
+}
+
 export async function setAppSetting(opts: {
   key: string;
   api_key: string;
@@ -141,8 +147,9 @@ export async function setAppSetting(opts: {
   persist?: boolean;
 }): Promise<Record<string, unknown>> {
   await loadAppSettings();
+  opts = { ...opts, key: canonicalSettingKey(opts.key) };
   if (!isSettingKey(opts.key)) {
-    return { ok: false, error: `Unknown setting. Use: ${SETTING_KEYS.join(', ')}` };
+    return { ok: false, error: `Unknown setting. Use: permitstack_api_key, ${SETTING_KEYS.join(', ')}` };
   }
   const value = opts.api_key.trim();
   const by = (opts.set_by || 'cayden').trim().toLowerCase() || 'cayden';
@@ -170,8 +177,9 @@ export async function clearAppSetting(opts: {
   set_by?: string;
 }): Promise<Record<string, unknown>> {
   await loadAppSettings();
+  opts = { ...opts, key: canonicalSettingKey(opts.key) };
   if (!isSettingKey(opts.key)) {
-    return { ok: false, error: `Unknown setting. Use: ${SETTING_KEYS.join(', ')}` };
+    return { ok: false, error: `Unknown setting. Use: permitstack_api_key, ${SETTING_KEYS.join(', ')}` };
   }
   const by = (opts.set_by || 'cayden').trim().toLowerCase() || 'cayden';
   slots[opts.key] = {

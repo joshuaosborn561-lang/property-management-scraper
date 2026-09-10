@@ -108,16 +108,18 @@ async function healthPayload() {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
+    permitstack_api_configured: shovelsKey.configured,
     shovels_api_configured: shovelsKey.configured,
+    permitstack_api_key: shovelsKey,
     shovels_api_key: shovelsKey,
     shovels_contractors_loaded: loadShovelsContractors().length,
     parcels_loaded: loadParcels().length,
     when_to_use:
-      'Shovels commercial GCs (including credit estimates); change the Shovels API key from Claude; DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden).',
+      'PermitStack commercial GCs (including request estimates); DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden). The PermitStack key is already on the server — do not ask anyone to rotate it.',
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Live: shovels_pull into the contractor store (then permits_contractors_query). DFW cache still free via save_calling_list. Enrich: score → match_texas_officers → lookup_line_type → owner_people_search. Never echo API keys.',
+      'Live: permitstack_pull / shovels_pull into the contractor store (then permits_contractors_query). DFW cache still free via save_calling_list. Enrich: score → match_texas_officers → lookup_line_type → owner_people_search. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -130,7 +132,7 @@ export function createPermitParcelMcpServer(): McpServer {
       version: '2.0.0',
       title: 'Permit & Parcel MCP (permits-GCs)',
       description:
-        'USE FOR: (1) Live Shovels commercial GC pulls for ANY US market (East/West coast included) via shovels_pull_calling_list; (2) free DFW cache (~6,124); (3) credit estimates; (4) Cayden sets Shovels API key; (5) Supabase calling lists; (6) DCAD/TAD/CCAD parcels + build_operators. No timezone / TX-only restriction on live search. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS. Never echo a full API key.',
+        'USE FOR: (1) Live PermitStack commercial GC pulls for ANY US market via permitstack_pull_calling_list (alias shovels_pull_calling_list); (2) free DFW cache (~6,124); (3) request estimates; (4) Supabase calling lists; (5) DCAD/TAD/CCAD parcels + build_operators. The PermitStack key is already configured — do not ask Cayden to rotate it. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS. Never echo a full API key.',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -400,8 +402,8 @@ NEXT: sync_to_supabase(dataset=parcels) for full matching set.`,
   server.registerTool(
     'shovels_api_key_status',
     {
-      title: 'Shovels API key — status (masked)',
-      description: `WHEN TO USE: Cayden asks whether a Shovels key is set, or before changing it.
+      title: 'PermitStack API key — status (masked)',
+      description: `WHEN TO USE: Cayden asks whether a PermitStack key is set. Alias: permitstack_api_key_status.
 WHAT IT DOES: Returns configured/source/masked fingerprint only. Never the full key. Free.`,
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -412,15 +414,15 @@ WHAT IT DOES: Returns configured/source/masked fingerprint only. Never the full 
   server.registerTool(
     'shovels_set_api_key',
     {
-      title: 'Shovels API key — set from Claude',
-      description: `WHEN TO USE: Cayden wants to paste/change the Shovels API key from Claude (no Railway env edit).
-WHAT IT DOES: Stores the key in memory and persists it to Supabase so Railway restarts keep it. Overwrites the env key at runtime.
+      title: 'PermitStack API key — set from Claude',
+      description: `WHEN TO USE: Cayden wants to paste/change the PermitStack API key from Claude. Alias: permitstack_set_api_key.
+WHAT IT DOES: Stores the key in memory and persists it to Supabase so Railway restarts keep it.
 RULES: confirm must be true. Never repeat the full key in chat — only the masked fingerprint. Default set_by=cayden.`,
       inputSchema: {
-        api_key: z.string().min(1).describe('The Shovels API key. Do not echo this back in chat.'),
+        api_key: z.string().min(1).describe('The PermitStack API key. Do not echo this back in chat.'),
         confirm: z
           .boolean()
-          .describe('Must be true. Show Cayden you are about to replace the live Shovels key, then set true.'),
+          .describe('Must be true. Show Cayden you are about to replace the live PermitStack key, then set true.'),
         set_by: z.string().optional().describe('Who is changing it. Default cayden.'),
         persist: z
           .boolean()
@@ -432,7 +434,7 @@ RULES: confirm must be true. Never repeat the full key in chat — only the mask
     async (args) => {
       if (args.confirm !== true) {
         return errorResult(
-          'Set confirm=true after Cayden agrees to replace the live Shovels API key. Do not echo the key.',
+          'Set confirm=true after Cayden agrees to replace the live PermitStack API key. Do not echo the key.',
         );
       }
       try {
@@ -452,8 +454,8 @@ RULES: confirm must be true. Never repeat the full key in chat — only the mask
   server.registerTool(
     'shovels_clear_api_key',
     {
-      title: 'Shovels API key — clear Claude override',
-      description: `WHEN TO USE: Cayden wants to drop the Claude-set key and fall back to SHOVELS_API_KEY env (or unset).
+      title: 'PermitStack API key — clear Claude override',
+      description: `WHEN TO USE: Cayden wants to drop the Claude-set key and fall back to PERMITSTACK_API_KEY env (or unset). Alias: permitstack_clear_api_key.
 RULES: confirm must be true. Never echo any key.`,
       inputSchema: {
         confirm: z.boolean().describe('Must be true'),
@@ -463,7 +465,7 @@ RULES: confirm must be true. Never echo any key.`,
     },
     async (args) => {
       if (args.confirm !== true) {
-        return errorResult('Set confirm=true to clear the Claude-set Shovels API key.');
+        return errorResult('Set confirm=true to clear the Claude-set PermitStack API key.');
       }
       try {
         return jsonResult(await clearShovelsApiKey({ set_by: args.set_by }));
@@ -473,16 +475,81 @@ RULES: confirm must be true. Never echo any key.`,
     },
   );
 
-  // ---- Shovels API credit estimate + calling lists ----
+  server.registerTool(
+    'permitstack_api_key_status',
+    {
+      title: 'PermitStack API key — status (masked)',
+      description: 'Masked fingerprint of the live PermitStack key. Never the full key.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => jsonResult(await getShovelsKeyStatus()),
+  );
+
+  server.registerTool(
+    'permitstack_set_api_key',
+    {
+      title: 'PermitStack API key — set from Claude',
+      description: 'Same as shovels_set_api_key. confirm=true. Never echo the full key.',
+      inputSchema: {
+        api_key: z.string().min(1).describe('The PermitStack API key. Do not echo this back in chat.'),
+        confirm: z.boolean().describe('Must be true'),
+        set_by: z.string().optional(),
+        persist: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) {
+        return errorResult('Set confirm=true after Cayden agrees to replace the live PermitStack API key.');
+      }
+      try {
+        return jsonResult(
+          await setShovelsApiKey({
+            api_key: args.api_key,
+            set_by: args.set_by,
+            persist: args.persist,
+          }),
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'permitstack_set_api_key failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'permitstack_clear_api_key',
+    {
+      title: 'PermitStack API key — clear Claude override',
+      description: 'Same as shovels_clear_api_key. confirm=true.',
+      inputSchema: {
+        confirm: z.boolean().describe('Must be true'),
+        set_by: z.string().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) {
+        return errorResult('Set confirm=true to clear the Claude-set PermitStack API key.');
+      }
+      try {
+        return jsonResult(await clearShovelsApiKey({ set_by: args.set_by }));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'permitstack_clear_api_key failed');
+      }
+    },
+  );
+
+  // ---- PermitStack request estimate + calling lists (shovels_* names are aliases) ----
 
   server.registerTool(
     'shovels_estimate_credits',
     {
-      title: 'Estimate Shovels API credits',
-      description: `WHEN TO USE: Credit estimate OR geo resolution check for any US market.
-WHAT IT DOES: Resolves EVERY geo first (county/city/zip/state). Failures are listed and NOT probed (saves credits). Then include_count probes clean geos at size=1 (this key bills per record — size=100 would cost 100). Returns free_tier_pages + paid_tier_companies + credits_used/remaining + total_count_raw. Use resolve_only=true for free reconnaissance.
-RULES: Prefer "Denton County, TX; Collin County, TX" (comma before state). "Denton County; TX; Collin…" used to invent a phantom TX geo. total_count is {value,relation} — never page size.
-NEXT: Show resolution table. Fix failures. Then pull with shovels_pull_calling_list.`,
+      title: 'Estimate PermitStack API requests',
+      description: `WHEN TO USE: Request estimate OR geo resolution check for any US market. Alias: permitstack_estimate_credits.
+WHAT IT DOES: Resolves geos locally (no live geo index). Then probes GET /v1/contractors/search (city+state; county uses the county name as city). 1 request per probe. Returns estimated_requests = ceil(total / page_size). resolve_only=true spends 0.
+RULES: Prefer "Denton County, TX; Collin County, TX". PermitStack bills per HTTP request (100/day free), not per contractor record.
+NEXT: Show resolution table. Then pull with permitstack_pull / shovels_pull_calling_list.`,
       inputSchema: {
         geos: z
           .string()
@@ -515,12 +582,39 @@ NEXT: Show resolution table. Fix failures. Then pull with shovels_pull_calling_l
   );
 
   server.registerTool(
+    'permitstack_estimate_credits',
+    {
+      title: 'Estimate PermitStack API requests',
+      description: 'Same as shovels_estimate_credits. Probe GET /v1/contractors/search; 1 request per geo.',
+      inputSchema: {
+        geos: z.string().optional(),
+        place: placeFilter,
+        city: z.string().optional(),
+        geo_level: z.enum(['auto', 'city', 'county', 'zip', 'state']).optional(),
+        resolve_only: z.boolean().optional(),
+        date_from: z.string().optional(),
+        date_to: z.string().optional(),
+        property_type: z.string().optional(),
+        page_size: z.number().int().min(1).max(100).optional(),
+        max_records: z.number().int().min(1).optional(),
+        q: z.string().optional(),
+        state: z.string().optional(),
+        has_email: z.boolean().optional(),
+        has_phone: z.boolean().optional(),
+        has_website: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async (args) => jsonResult(await estimateShovelsCredits(args)),
+  );
+
+  server.registerTool(
     'shovels_pull',
     {
-      title: 'Live Shovels pull → local contractor store',
-      description: `WHEN TO USE: Fetch live Shovels contractors for a geo (e.g. Denton County) into the same store permits_contractors_query / save_calling_list read. Cache is Dallas/Fort_Worth/Rockwall only until you pull.
-WHAT IT DOES: Resolves geos, paginates with next_cursor, upserts by Shovels id (unions places), returns COUNTS only. max_records is a hard stop checked before each request. dry_run=true resolves only (0 credits). Cursors persist in pull_state.json for resume after restart.
-RULES: max_records required. Prefer page_size=100 on trial (1 request/page). On record-metered keys size≈credits — still use include_count probes at size=1 via estimate first. Never dump rows.
+      title: 'Live PermitStack pull → local contractor store',
+      description: `WHEN TO USE: Fetch live PermitStack contractors for a geo (e.g. Denton County) into the same store permits_contractors_query / save_calling_list read. Alias: permitstack_pull.
+WHAT IT DOES: Resolves geos locally, pages GET /v1/contractors/search (city+state), upserts by contractor id, returns COUNTS only. dry_run=true resolves only (0 requests).
+RULES: max_records required. 1 request per page (per_page up to 100). Never dump rows.
 NEXT: permits_contractors_query(place="Denton_County") / save_calling_list.`,
       inputSchema: {
         geos: z
@@ -562,12 +656,43 @@ NEXT: permits_contractors_query(place="Denton_County") / save_calling_list.`,
   );
 
   server.registerTool(
+    'permitstack_pull',
+    {
+      title: 'Live PermitStack pull → local contractor store',
+      description: 'Same as shovels_pull. Pages GET /v1/contractors/search by city/state.',
+      inputSchema: {
+        geos: z.string().optional(),
+        place: placeFilter,
+        city: z.string().optional(),
+        state: z.string().optional(),
+        geo_level: z.enum(['auto', 'city', 'county', 'zip', 'state']).optional(),
+        property_type: z.string().optional(),
+        date_from: z.string().optional(),
+        date_to: z.string().optional(),
+        page_size: z.number().int().min(1).max(100).optional(),
+        max_records: z.number().int().min(1).max(50000),
+        dry_run: z.boolean().optional(),
+        min_credits_remaining: z.number().int().min(0).optional(),
+        reset_cursor: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await shovelsPull(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'permitstack_pull failed');
+      }
+    },
+  );
+
+  server.registerTool(
     'shovels_pull_calling_list',
     {
-      title: 'Live Shovels pull → Supabase calling list (any US geo)',
-      description: `WHEN TO USE: Cayden (or anyone) wants a commercial GC calling list for ANY US market — East coast, West coast, Miami, LA, NYC, a state code, etc. Not limited to DFW and not timezone-restricted.
-WHAT IT DOES: Without confirm=true, returns a credit estimate only. With confirm=true, pages Shovels /contractors/search for the requested geos, writes scrape_leads + calling_lists, returns list id + counts.
-RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). east_coast / west_coast expand to major metros (not whole coasts) to control spend; use geos=CA for statewide.
+      title: 'Live PermitStack pull → Supabase calling list (any US geo)',
+      description: `WHEN TO USE: Cayden wants a GC calling list for ANY US market. Alias: permitstack_pull_calling_list.
+WHAT IT DOES: Without confirm=true, returns a request estimate only. With confirm=true, pages PermitStack /v1/contractors/search (cities) or /v1/permits/search (county jurisdiction / ZIP), writes scrape_leads + calling_lists. has_phone=true hydrates THIS window's profiles (paced under 60 req/min; 429s retry). Chain/permit filters run before hydration.
+RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). Re-run the same geo to resume the stored cursor (new contractors). Pass cursor/offset/reset_cursor to control paging. east_coast / west_coast expand to major metros.
 NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
       inputSchema: {
         geos: z
@@ -594,6 +719,9 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
           .boolean()
           .optional()
           .describe('Must be true to spend Shovels credits and write the list'),
+        cursor: z.string().optional().describe('PermitStack page to resume from (overrides stored cursor)'),
+        offset: z.number().int().min(0).optional().describe('Skip first N contractors in fetch order'),
+        reset_cursor: z.boolean().optional().describe('Clear stored cursor and start at page 1'),
       },
       annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
     },
@@ -602,6 +730,45 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
         return jsonResult(await pullShovelsCallingList(args));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : 'shovels_pull_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'permitstack_pull_calling_list',
+    {
+      title: 'Live PermitStack pull → Supabase calling list',
+      description: 'Same as shovels_pull_calling_list. confirm=true spends requests and writes the list.',
+      inputSchema: {
+        geos: z.string().optional(),
+        place: placeFilter,
+        city: z.string().optional(),
+        state: z.string().optional(),
+        geo_level: z.enum(['auto', 'city', 'county', 'zip', 'state']).optional(),
+        date_from: z.string().optional(),
+        date_to: z.string().optional(),
+        property_type: z.string().optional(),
+        page_size: z.number().int().min(1).max(100).optional(),
+        max_records: z.number().int().min(1).max(8000).optional(),
+        has_phone: z.boolean().optional(),
+        has_email: z.boolean().optional(),
+        exclude_national_chains: z.boolean().optional(),
+        min_permit_count: z.number().int().min(0).optional(),
+        max_permit_count: z.number().int().min(0).optional(),
+        name: z.string().optional(),
+        owner: z.string().optional(),
+        confirm: z.boolean().optional(),
+        cursor: z.string().optional(),
+        offset: z.number().int().min(0).optional(),
+        reset_cursor: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await pullShovelsCallingList(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'permitstack_pull_calling_list failed');
       }
     },
   );
@@ -721,9 +888,16 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
         has_phone: z.boolean().optional().describe('true = dialable rows only'),
         has_email: z.boolean().optional(),
         dial_status: z
-          .enum(['owner_cell', 'owner_landline', 'company_line', 'needs_enrichment', 'skip'])
+          .enum([
+            'owner_cell',
+            'owner_landline',
+            'company_line',
+            'mobile_unverified_owner',
+            'needs_enrichment',
+            'skip',
+          ])
           .optional()
-          .describe('After enrichment. owner_cell = Cayden can dial'),
+          .describe('After enrichment. owner_cell = officer-confirmed mobile; mobile_unverified_owner = verified mobile, no officer source'),
         min_permit_count: minPermitCount,
         max_permit_count: maxPermitCount,
         exclude_national_chains: excludeNationalChains,
@@ -760,7 +934,7 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
 RULES: confirm=true. Never echo the full key. key is veriphone_api_key or texas_cpa_api_key (or shovels_api_key).`,
       inputSchema: {
         key: z
-          .enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key'])
+          .enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key', 'permitstack_api_key'])
           .describe('Which key to set'),
         api_key: z.string().min(1).describe('The secret. Do not echo this back.'),
         confirm: z.boolean().describe('Must be true'),
@@ -794,7 +968,7 @@ RULES: confirm=true. Never echo the full key. key is veriphone_api_key or texas_
       title: 'Clear a Claude-set enrichment API key',
       description: 'Drops the Claude override for Veriphone / Texas CPA / Shovels. confirm=true.',
       inputSchema: {
-        key: z.enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key']),
+        key: z.enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key', 'permitstack_api_key']),
         confirm: z.boolean(),
         set_by: z.string().optional(),
       },
@@ -841,7 +1015,7 @@ WHAT IT DOES: Flags owner-likely vs company-line. $0. Default only_unscored=true
     {
       title: 'Match Texas Comptroller officers (free PIR)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
-WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/agent/error so re-runs advance — do not use next_offset while that filter is on. Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner).`,
+WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/agent/error/unavailable so re-runs advance — do not use next_offset while that filter is on. Never-attempted is officer_match=null (not none). Out-of-state rows are marked unavailable. Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner).`,
       inputSchema: {
         list_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional().describe('Default 80. Max 100; one call should finish within the 48s budget.'),
@@ -868,7 +1042,7 @@ WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s s
       title: 'Veriphone line type (cell vs landline)',
       description: `WHEN TO USE: After scoring + officers, to mark Shovels phones as mobile/landline/voip.
 COST: ~$2.40 per 1,000 (Veriphone Standard). First call without confirm=true returns the $ estimate only.
-RULES: Show the estimate. confirm=true to spend. Default cap 50. only_unknown=true (default) resumes — omit offset. Non-NANP phones are marked invalid (no spend) so the queue drains. match+mobile sets dial_status=owner_cell. Never echo the API key.`,
+RULES: Show the estimate. confirm=true to spend. Default cap 50. only_unknown=true (default) resumes — omit offset. Non-NANP phones are marked invalid (no spend) so the queue drains. match+mobile sets dial_status=owner_cell; verified mobile with no officer source sets mobile_unverified_owner. Never echo the API key.`,
       inputSchema: {
         list_id: z.string().min(1),
         confirm: z.boolean().optional().describe('Must be true to spend credits'),
@@ -1041,12 +1215,12 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — Shovels contractors.
+            text: `Permit & Parcel MCP — PermitStack contractors.
 Request: "${request || 'Summarize the contractor file'}"
-1) If they want to change the Shovels key: shovels_set_api_key (confirm=true). Never echo the full key.
-2) Any US market (East/West coast, city, state): shovels_pull_calling_list — estimate first, then confirm=true. No timezone / TX-only gate.
-3) If they ask cost only: shovels_estimate_credits (show free pages AND paid companies)
-4) DFW cache: permits_contractors_* then save_calling_list (0 credits). Use exclude_national_chains=true.
+1) Do not ask anyone to rotate the PermitStack key. It is already on the server.
+2) Any US market (East/West coast, city, state): permitstack_pull_calling_list — estimate first, then confirm=true.
+3) If they ask cost only: permitstack_estimate_credits (quote estimated_requests)
+4) DFW cache: permits_contractors_* then save_calling_list (0 requests). Use exclude_national_chains=true.
 5) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)
 6) verify with select count(*) — never dump all rows into chat.`,
           },
@@ -1058,8 +1232,8 @@ Request: "${request || 'Summarize the contractor file'}"
   server.registerPrompt(
     'pp_set_shovels_key',
     {
-      title: 'Set or change the Shovels API key',
-      description: 'Use when Cayden wants to paste a new Shovels API key from Claude.',
+      title: 'PermitStack key status (do not rotate)',
+      description: 'The PermitStack key is already on the server. Do not ask Cayden to paste a new one.',
       argsSchema: {
         request: z.string().optional(),
       },
@@ -1070,13 +1244,11 @@ Request: "${request || 'Summarize the contractor file'}"
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — Shovels API key.
-Request: "${request || 'Cayden wants to set or change the Shovels API key'}"
-1) shovels_api_key_status — show only the masked fingerprint
-2) Ask Cayden to paste the new key in chat
-3) shovels_set_api_key with confirm=true, set_by=cayden, persist=true
-4) Never repeat the full key. Confirm the new masked fingerprint.
-5) Optionally shovels_estimate_credits to verify the key works.`,
+            text: `Permit & Parcel MCP — PermitStack key.
+Request: "${request || 'Is the PermitStack key set?'}"
+1) health or permitstack_api_key_status — show only the masked fingerprint
+2) Do NOT ask Cayden to paste or rotate the key. It is already configured.
+3) If they want a pull, go to permitstack_estimate_credits / permitstack_pull_calling_list.`,
           },
         },
       ],

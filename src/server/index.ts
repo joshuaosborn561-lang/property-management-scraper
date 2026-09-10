@@ -35,6 +35,8 @@ app.get('/api/health', async (_req, res) => {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
+    permitstackApiConfigured: shovelsKey.configured,
+    permitstack_api_key: shovelsKey,
     shovelsApiConfigured: shovelsKey.configured,
     shovels_api_key: shovelsKey,
     enrichment_keys: await enrichmentKeysStatus(),
@@ -128,7 +130,7 @@ app.listen(config.port, () => {
   void loadAppSettings().then(() =>
     enrichmentKeysStatus().then((keys) => {
       console.log(
-        `Keys: shovels=${keys.shovels_api_key.configured ? keys.shovels_api_key.masked : 'unset'} veriphone=${keys.veriphone_api_key.configured ? keys.veriphone_api_key.masked : 'unset'} cpa=${keys.texas_cpa_api_key.configured ? keys.texas_cpa_api_key.masked : 'unset'}`,
+        `Keys: permitstack=${keys.shovels_api_key.configured ? keys.shovels_api_key.masked : 'unset'} veriphone=${keys.veriphone_api_key.configured ? keys.veriphone_api_key.masked : 'unset'} cpa=${keys.texas_cpa_api_key.configured ? keys.texas_cpa_api_key.masked : 'unset'}`,
       );
     }),
   );

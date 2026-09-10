@@ -243,11 +243,15 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
             probe_credits: probe.headers.credits_request,
             credits_remaining_after: probe.headers.credits_remaining,
             no_coverage: probe.no_coverage,
-            coverage: probe.no_coverage
-              ? 'no_coverage'
-              : probe.count_unreliable
-                ? 'count_unreliable'
-                : 'ok',
+            county_query_empty: probe.county_query_empty === true,
+            coverage_error: probe.coverage_error ?? null,
+            coverage: probe.county_query_empty
+              ? 'county_query_empty'
+              : probe.no_coverage
+                ? 'no_coverage'
+                : probe.count_unreliable
+                  ? 'count_unreliable'
+                  : 'ok',
             last_job_pages: hist?.pages ?? null,
             last_job_fetched: hist?.fetched ?? null,
           });
@@ -296,6 +300,7 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
 
   const resolutionFailed = geos.filter((g) => g.ok === false);
   const noCoverage = geos.filter((g) => g.coverage === 'no_coverage');
+  const countyEmpty = geos.filter((g) => g.coverage === 'county_query_empty');
   const places = targets.map((t) => t.place).join(', ');
 
   const creditsUsed =
@@ -313,17 +318,19 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     ok: resolutionFailed.length === 0 || resolveOnly || probed.length > 0,
     resolve_only: resolveOnly,
     source: resolveOnly
-      ? 'shovels_resolve_only'
+      ? 'permitstack_resolve_only'
       : live
-        ? 'shovels_api_include_count'
+        ? 'permitstack_contractor_search'
         : liveError
           ? 'last_job_fallback'
           : 'last_job_no_api_key',
     live_api: live,
+    provider: 'permitstack',
     shovels_api_configured: hasShovelsApi(),
+    permitstack_api_configured: hasShovelsApi(),
     key_hint: hasShovelsApi()
       ? null
-      : 'No Shovels key on this server. Cayden can set one with shovels_set_api_key (confirm=true). Never echo the full key.',
+      : 'PermitStack key missing from this process. It should come from PERMITSTACK_API_KEY — do not ask Cayden to rotate keys.',
     live_error: liveError,
     spends_shovels_credits: live && !resolveOnly,
     probe_credits_spent: resolveOnly ? 0 : live ? probeCredits : 0,
@@ -336,22 +343,23 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     geos,
     contractors: resolveOnly ? null : contractors,
     billing: {
-      free_trial:
-        'Confirm the meter from response headers: if x-credits-request equals page size (e.g. 100 for size=100), this key is on RECORD billing — probes must stay at size=1. include_count still returns the full {value,relation} total at size=1. Prefer resolve_only=true before probing a long county list.',
-      paid: '1 credit = 1 company/record returned. A size=100 page costs ~100 credits. Same DFW pull ≈ 6,124 credits. Probes use size=1 so include_count costs ~1 credit/geo.',
-      observed_meter:
-        'Live Denton probe: size=1 → x-credits-request=1 with total_count.value=1402; size=100 → x-credits-request=100. Treat this key as record-metered.',
+      provider: 'permitstack',
+      unit: '1 HTTP request = 1 contractor-search page (per_page up to 100) or 1 profile hydration',
+      free_trial: 'PermitStack free tier is 100 requests/day. A per_page=1 probe still returns the full total and costs 1 request.',
+      paid: 'Paid plans raise the daily request cap. Contact fields (phone/email) are on Developer and up via GET /v1/contractors/{id}.',
+      docs: 'https://permit-stack.com/docs/  OpenAPI: https://api.permit-stack.com/public-openapi.json',
     },
     credits: {
       cached_query: 0,
+      estimated_requests: resolveOnly ? 0 : pages,
       free_tier_pages: resolveOnly ? 0 : pages,
       paid_tier_companies: resolveOnly ? 0 : companies,
       estimate: resolveOnly ? 0 : pages,
       used: creditsUsed,
       remaining: creditsRemaining,
       limit: creditsLimit,
-      unit_free: '1 credit ≈ 1 API page (how the last DFW pull billed — under 500)',
-      unit_paid: '1 credit = 1 contractor record',
+      unit_free: '1 request = 1 PermitStack HTTP call (search page)',
+      unit_paid: 'Same — PermitStack does not bill per contractor record',
     },
     last_dfw_job: {
       requests_used: lastJob.requests_used_this_job ?? LAST_DFW_JOB.requests_used,
@@ -373,11 +381,11 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     },
     explanation: resolveOnly
       ? `Resolved ${targets.length} geo(s) with 0 probe credits. ${resolutionFailed.length} failed. Fix failures before probing.`
-      : `Pull for ${places || 'default geos'}: ~${pages} pages / ~${companies} companies. ${resolutionFailed.length} resolution failure(s) were NOT probed. ${noCoverage.length} geo(s) report no_coverage (0 contractors).`,
+      : `Pull for ${places || 'default geos'}: ~${pages} pages / ~${companies} companies. ${resolutionFailed.length} resolution failure(s) were NOT probed. ${countyEmpty.length} county geo(s) returned 0 from jurisdiction search (not a silent city miss). ${noCoverage.length} geo(s) report no_coverage.`,
     assistant_instructions: resolveOnly
       ? 'Show each resolved_name / resolved_kind / resolved_geo_id. If any error, fix the geos string (use "Denton County, TX" — not "Denton County; TX; …" with bare state slots — or geo_level=county, or a ZIP list) before probing. Do not probe until resolution is clean.'
       : hasShovelsApi()
-        ? 'Show BOTH free_tier_pages and paid_tier_companies, plus credits_used / credits_remaining. Flag coverage=count_unreliable or has_more with a tiny total_count — that means include_count lied; the page sample is the floor. Prefer "County, TX" (comma before state), not "County; TX".'
-        : 'No API key is configured. Offer shovels_set_api_key. Never echo the full key.',
+        ? 'PermitStack bills per HTTP request (not per contractor). Quote credits.estimated_requests (search pages). Profile hydration for phone/email is extra 1 request each and is Developer-plan. Cached DFW tools still cost 0.'
+        : 'PermitStack key is not loaded. Check PERMITSTACK_API_KEY on the server. Do not ask Cayden to paste a key.',
   };
 }

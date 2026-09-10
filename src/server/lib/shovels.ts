@@ -1,7 +1,12 @@
-import { config } from '../config.js';
-import { getShovelsApiKey, hasShovelsApi as hasRuntimeShovelsKey } from './shovelsKey.js';
-
-const BASE = config.shovelsBaseUrl || 'https://api.shovels.ai/v2';
+import {
+  countyJurisdictionError,
+  getPermitstackUsage,
+  hasPermitstackApi,
+  mapPermitstackContractor,
+  parseGeoId,
+  permitstackSearchContractorsPage,
+  synthesizeGeoId,
+} from './permitstack.js';
 
 const US_STATES = new Set([
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA',
@@ -43,6 +48,9 @@ export interface ContractorCountProbe {
   headers: ShovelsHeaders;
   /** True when Shovels returned no usable count and empty first page. */
   no_coverage: boolean;
+  /** County jurisdiction search returned 0 — not a silent city miss. */
+  county_query_empty?: boolean;
+  coverage_error?: string | null;
 }
 
 export interface ShovelsApiContractor {
@@ -80,86 +88,12 @@ export class GeoResolutionError extends Error {
   }
 }
 
-function headerNum(res: Response, ...names: string[]): number | null {
-  for (const name of names) {
-    const raw = res.headers.get(name);
-    if (raw == null || raw === '') continue;
-    const n = Number(raw);
-    if (Number.isFinite(n)) return n;
-  }
-  return null;
-}
-
-function creditHeaders(res: Response): ShovelsHeaders {
-  const raw: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    if (/credit/i.test(k) || /x-/i.test(k)) raw[k] = v;
-  });
-  return {
-    credits_request: headerNum(res, 'x-credits-request', 'x-credit-request', 'credits-request'),
-    credits_limit: headerNum(res, 'x-credits-limit', 'x-credit-limit', 'credits-limit'),
-    credits_remaining: headerNum(res, 'x-credits-remaining', 'x-credit-remaining', 'credits-remaining'),
-    raw: Object.keys(raw).length ? raw : undefined,
-  };
-}
-
 export function hasShovelsApi(): boolean {
-  return hasRuntimeShovelsKey();
-}
-
-async function shovelsGet(path: string, query: Record<string, string | number | boolean | undefined>) {
-  const apiKey = getShovelsApiKey();
-  if (!apiKey) {
-    throw new Error('SHOVELS_API_KEY is not configured — Cayden can set it with shovels_set_api_key');
-  }
-  const url = new URL(path.startsWith('http') ? path : `${BASE}${path}`);
-  for (const [k, v] of Object.entries(query)) {
-    if (v == null || v === '') continue;
-    url.searchParams.set(k, String(v));
-  }
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'X-API-Key': apiKey,
-      Accept: 'application/json',
-    },
-  });
-  const text = await res.text();
-  let body: unknown = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = { raw: text.slice(0, 300) };
-  }
-  if (!res.ok) {
-    const detail =
-      typeof body === 'object' && body && 'detail' in body
-        ? JSON.stringify((body as { detail: unknown }).detail).slice(0, 240)
-        : text.slice(0, 240);
-    throw new Error(`Shovels ${res.status} ${path}: ${detail}`);
-  }
-  return { body, headers: creditHeaders(res), status: res.status };
+  return hasPermitstackApi();
 }
 
 export async function getShovelsUsage(): Promise<Record<string, unknown> | null> {
-  if (!hasShovelsApi()) return null;
-  const { body, headers } = await shovelsGet('/usage', {});
-  const rec = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
-  const used = Number(rec.credits_used ?? rec.used ?? NaN);
-  const limit = Number(rec.credit_limit ?? rec.credits_limit ?? headers.credits_limit ?? NaN);
-  const remaining =
-    headers.credits_remaining != null
-      ? headers.credits_remaining
-      : Number.isFinite(used) && Number.isFinite(limit)
-        ? Math.max(0, limit - used)
-        : null;
-  return {
-    ...rec,
-    credits_used: Number.isFinite(used) ? used : null,
-    credits_remaining: remaining,
-    credits_limit: Number.isFinite(limit) ? limit : headers.credits_limit,
-    headers,
-  };
+  return getPermitstackUsage();
 }
 
 /** Shovels returns total_count as `{ value, relation }` — not a bare number. */
@@ -306,10 +240,21 @@ function countyRefusalHint(kind: GeoKind, q: string, state?: string): string {
   if (kind === 'county') {
     return (
       ' Refusing to probe — requested kind is already county. ' +
-      'Shovels county names omit "County"; a hit like "Denton, TX" is Denton County when the normalized name and state match.'
+      'PermitStack does not use Shovels geo_ids; county tokens resolve locally (Denton County, TX → county:denton:tx).'
     );
   }
   return ` Refusing to probe. Pass an explicit level (e.g. "${q} County, ${state || 'TX'}" or geo_level=county).`;
+}
+
+function displayGeoName(kind: GeoKind, q: string, state?: string): string {
+  const st = state?.trim().toUpperCase();
+  if (kind === 'state') return q.toUpperCase();
+  if (kind === 'zip') return q;
+  if (kind === 'county') {
+    const core = q.replace(/\s+(county|parish|borough)$/i, '').trim();
+    return st ? `${core} County, ${st}` : `${core} County`;
+  }
+  return st ? `${q}, ${st}` : q;
 }
 
 export async function resolveShovelsGeo(opts: {
@@ -321,67 +266,61 @@ export async function resolveShovelsGeo(opts: {
   searchItems?: Array<{ geo_id?: string; name?: string; state?: string }>;
 }): Promise<ShovelsGeo> {
   const q = opts.q.trim();
-  if (!q) throw new GeoResolutionError('Empty Shovels geo query', { ...opts });
+  if (!q) throw new GeoResolutionError('Empty PermitStack geo query', { ...opts });
 
   const asState = q.toUpperCase();
   if (opts.kind === 'state' || (opts.kind !== 'zip' && q.length === 2 && US_STATES.has(asState))) {
     if (!US_STATES.has(asState)) {
       throw new GeoResolutionError(`Unknown US state code "${q}"`, { ...opts });
     }
-    return { geo_id: asState, name: asState, state: asState, kind: 'state' };
+    return { geo_id: synthesizeGeoId('state', asState), name: asState, state: asState, kind: 'state' };
   }
 
-  // ZIPs are valid geo_ids directly (docs); skip search to avoid burning credits.
   if (opts.kind === 'zip' || /^\d{5}(-\d{4})?$/.test(q)) {
     const zip = q.replace(/\D/g, '').slice(0, 5);
     if (!/^\d{5}$/.test(zip)) {
       throw new GeoResolutionError(`Invalid ZIP "${q}"`, { ...opts });
     }
-    return { geo_id: zip, name: zip, state: opts.state, kind: 'zip' };
+    return { geo_id: synthesizeGeoId('zip', zip), name: zip, state: opts.state, kind: 'zip' };
   }
 
-  const path =
-    opts.kind === 'county' ? '/counties/search' : opts.kind === 'city' ? '/cities/search' : '/cities/search';
-
-  let items: Array<{ geo_id?: string; name?: string; state?: string }> = opts.searchItems ?? [];
-  if (!opts.searchItems) {
-    let body: unknown;
-    try {
-      ({ body } = await shovelsGet(path, { q }));
-    } catch (err) {
+  // PermitStack has no city/county search index — resolve locally.
+  // searchItems is only for fixture tests of the old matcher.
+  if (opts.searchItems) {
+    const pickKind = opts.kind === 'county' ? 'county' : 'city';
+    const geo = pickGeo(opts.searchItems, pickKind, q, opts.state);
+    if (!geo) {
+      const top = opts.searchItems.slice(0, 3).map((i) => i.name).filter(Boolean);
       throw new GeoResolutionError(
-        err instanceof Error ? err.message : String(err),
+        `No PermitStack ${opts.kind} match for "${q}"${opts.state ? ` (${opts.state})` : ''}` +
+          (top.length ? ` — top hits were: ${top.join(' | ')}` : ' — empty search result') +
+          `.${countyRefusalHint(opts.kind, q, opts.state)}`,
         { kind: opts.kind, q, state: opts.state },
+        top.length ? { top_hits: top } : null,
       );
     }
-    items = Array.isArray((body as { items?: unknown[] })?.items)
-      ? ((body as { items: Array<{ geo_id?: string; name?: string; state?: string }> }).items)
-      : [];
+    if (!geoNameMatches(geo.name, geo.kind, q, opts.state ?? geo.state)) {
+      throw new GeoResolutionError(
+        `Requested ${opts.kind} "${q}" resolved to "${geo.name}" (${geo.geo_id}) — mismatch, refusing to probe`,
+        { kind: opts.kind, q, state: opts.state },
+        { resolved_geo_id: geo.geo_id, resolved_name: geo.name, resolved_kind: geo.kind, resolved_state: geo.state },
+      );
+    }
+    return geo;
   }
 
-  const pickKind = opts.kind === 'county' ? 'county' : 'city';
-  const geo = pickGeo(items, pickKind, q, opts.state);
-
-  if (!geo) {
-    const top = items.slice(0, 3).map((i) => i.name).filter(Boolean);
-    throw new GeoResolutionError(
-      `No Shovels ${opts.kind} match for "${q}"${opts.state ? ` (${opts.state})` : ''}` +
-        (top.length ? ` — top hits were: ${top.join(' | ')}` : ' — empty search result') +
-        `.${countyRefusalHint(opts.kind, q, opts.state)}`,
-      { kind: opts.kind, q, state: opts.state },
-      top.length ? { top_hits: top } : null,
-    );
+  const kind = opts.kind === 'county' ? 'county' : 'city';
+  const core = q.replace(/\s+(county|parish|borough)$/i, '').trim();
+  const state = opts.state?.trim().toUpperCase();
+  if (kind === 'city' && !core) {
+    throw new GeoResolutionError(`Empty city name`, { ...opts });
   }
-
-  if (!geoNameMatches(geo.name, geo.kind, q, opts.state ?? geo.state)) {
-    throw new GeoResolutionError(
-      `Requested ${opts.kind} "${q}" resolved to "${geo.name}" (${geo.geo_id}) — mismatch, refusing to probe`,
-      { kind: opts.kind, q, state: opts.state },
-      { resolved_geo_id: geo.geo_id, resolved_name: geo.name, resolved_kind: geo.kind, resolved_state: geo.state },
-    );
-  }
-
-  return geo;
+  return {
+    geo_id: synthesizeGeoId(kind, core, state),
+    name: displayGeoName(kind, core, state),
+    state,
+    kind,
+  };
 }
 
 export async function probeContractorCount(opts: {
@@ -396,93 +335,38 @@ export async function probeContractorCount(opts: {
    */
   size?: number;
 }): Promise<ContractorCountProbe> {
-  const size = Math.min(100, Math.max(1, opts.size ?? 1));
-  const { body, headers } = await shovelsGet('/contractors/search', {
-    geo_id: opts.geo.geo_id,
+  const page = await permitstackSearchContractorsPage({
+    geo: opts.geo,
     permit_from: opts.permit_from,
     permit_to: opts.permit_to,
-    property_type: opts.property_type || 'commercial',
-    include_count: true,
-    include_tallies: false,
-    size,
+    property_type: opts.property_type,
+    size: 1,
   });
-  const rec = body as {
-    total_count?: unknown;
-    size?: unknown;
-    next_cursor?: string | null;
-    items?: unknown[];
-  };
-  // ONLY trust total_count — never response `size` / items.length (those are the page).
-  const parsed = parseTotalCount(rec.total_count);
-  const itemsOnPage = Array.isArray(rec.items) ? rec.items.length : 0;
-  const pageSizeReturned =
-    typeof rec.size === 'number' && Number.isFinite(rec.size) ? rec.size : itemsOnPage;
-  const nextCursor = rec.next_cursor ?? null;
-  const hasMore = Boolean(nextCursor);
-  // Undeployed/old bug signature: Number({value,relation}) → NaN → items.length (often 1)
-  // while next_cursor is set. Detect when raw object was ignored.
-  const rawIsObject =
-    rec.total_count != null && typeof rec.total_count === 'object' && !Array.isArray(rec.total_count);
-  const countUnreliable =
-    rec.total_count == null ||
-    (!rawIsObject && parsed.value === 1 && hasMore) ||
-    (parsed.value === 1 && hasMore && itemsOnPage === 1 && !rawIsObject);
-
+  const parsed = parseTotalCount(page.total_count_raw);
+  const itemsOnPage = page.items.length;
+  const hasMore = Boolean(page.next_cursor);
+  const countyEmpty =
+    opts.geo.kind === 'county' &&
+    (page.county_query_empty === true || (parsed.value === 0 && !hasMore && itemsOnPage === 0));
   return {
     geo: opts.geo,
     total_count: parsed.value,
     count_relation: parsed.relation ?? (hasMore && parsed.value > 0 ? 'gte' : null),
-    total_count_raw: rec.total_count ?? null,
+    total_count_raw: page.total_count_raw,
     items_on_probe: itemsOnPage,
-    page_size_returned: pageSizeReturned,
+    page_size_returned: itemsOnPage,
     has_more: hasMore,
-    next_cursor: nextCursor,
-    count_unreliable: countUnreliable,
-    headers,
-    no_coverage: parsed.value === 0 && !hasMore && itemsOnPage === 0,
+    next_cursor: page.next_cursor,
+    count_unreliable: false,
+    headers: page.headers,
+    no_coverage: !countyEmpty && parsed.value === 0 && !hasMore && itemsOnPage === 0,
+    county_query_empty: countyEmpty,
+    coverage_error: countyEmpty ? countyJurisdictionError(opts.geo) : null,
   };
-}
-
-function strOrNull(v: unknown): string | null {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s ? s : null;
-}
-
-function numOrNull(v: unknown): number | null {
-  if (v == null || v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
 }
 
 export function mapShovelsApiContractor(raw: Record<string, unknown>, placeTag: string): ShovelsApiContractor {
-  const addr =
-    raw.address && typeof raw.address === 'object'
-      ? (raw.address as Record<string, unknown>)
-      : {};
-  const street = [strOrNull(addr.street_no), strOrNull(addr.street)].filter(Boolean).join(' ') || null;
-  return {
-    id: String(raw.id ?? ''),
-    name: strOrNull(raw.name),
-    business_name: strOrNull(raw.business_name),
-    dba: strOrNull(raw.dba),
-    phone: strOrNull(raw.phone),
-    primary_phone: strOrNull(raw.primary_phone),
-    email: strOrNull(raw.email),
-    primary_email: strOrNull(raw.primary_email),
-    website: strOrNull(raw.website),
-    linkedin_url: strOrNull(raw.linkedin_url),
-    employee_count: strOrNull(raw.employee_count),
-    address_street: street,
-    address_city: strOrNull(addr.city),
-    address_state: strOrNull(addr.state),
-    address_zip: strOrNull(addr.zip_code) || strOrNull(addr.zip),
-    places: [placeTag],
-    permit_count: numOrNull(raw.permit_count),
-    total_job_value: numOrNull(raw.total_job_value),
-    primary_industry: strOrNull(raw.primary_industry),
-    business_type: strOrNull(raw.business_type),
-  };
+  return mapPermitstackContractor(raw, placeTag);
 }
 
 export async function shovelsSearchContractorsPage(opts: {
@@ -499,31 +383,21 @@ export async function shovelsSearchContractorsPage(opts: {
   total_count_raw: unknown;
   headers: ShovelsHeaders;
 }> {
-  const query: Record<string, string | number | boolean | undefined> = {
+  const parsed = parseGeoId(opts.geo_id);
+  const geo: ShovelsGeo = {
     geo_id: opts.geo_id,
+    name: parsed.city || parsed.zip || parsed.state || opts.geo_id,
+    state: parsed.state,
+    kind: parsed.kind || 'city',
+  };
+  return permitstackSearchContractorsPage({
+    geo,
     permit_from: opts.permit_from,
     permit_to: opts.permit_to,
-    property_type: opts.property_type || 'commercial',
-    include_count: opts.include_count === true,
-    include_tallies: false,
+    property_type: opts.property_type,
     size: opts.size,
-  };
-  if (opts.cursor) query.cursor = opts.cursor;
-  const { body, headers } = await shovelsGet('/contractors/search', query);
-  const rec = body as {
-    items?: unknown[];
-    next_cursor?: string | null;
-    total_count?: unknown;
-  };
-  const items = Array.isArray(rec.items)
-    ? rec.items.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === 'object')
-    : [];
-  return {
-    items,
-    next_cursor: rec.next_cursor ?? null,
-    total_count_raw: rec.total_count ?? null,
-    headers,
-  };
+    cursor: opts.cursor,
+  });
 }
 
 export async function pullContractorsForGeo(opts: {

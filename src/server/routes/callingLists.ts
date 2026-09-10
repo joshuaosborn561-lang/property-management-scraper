@@ -6,6 +6,7 @@ import {
   matchTexasOfficers,
   ownerPeopleSearch,
   recordOwnerCell,
+  recomputeOfficerDialStatus,
   scoreCallingList,
 } from '../services/enrichCallingList.js';
 import { enrichmentKeysStatus, setAppSetting } from '../lib/appSettings.js';
@@ -137,6 +138,19 @@ callingListsRouter.post('/score', async (req, res) => {
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'score failed' });
+  }
+});
+
+callingListsRouter.post('/recompute-dial', async (req, res) => {
+  try {
+    const result = await recomputeOfficerDialStatus({
+      list_id: typeof req.body?.list_id === 'string' ? req.body.list_id : undefined,
+      all_lists: req.body?.all_lists === true,
+      confirm: req.body?.confirm === true,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'recompute dial failed' });
   }
 });
 

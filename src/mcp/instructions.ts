@@ -67,7 +67,7 @@ Goal: dial **owner cells**, not office/main/license lines.
 2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
 3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\` — Texas entities only. Florida lists: \`match_florida_officers(only_unmatched=true, limit=40)\` (public Sunbiz first; a rejected SOS key falls back to HTML or returns ok=false with zero writes — never stamps \`error\`).
 4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
-5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match+mobile**. Verified mobiles with no officer source (out-of-state) are \`mobile_unverified_owner\`. Leftovers (\`agent\` / \`different\`): \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
+5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match/resolved+mobile**. Verified mobiles with no owner identity are \`mobile_unverified_owner\` (including \`agent\`). Genuine person-name conflicts stay \`different\` but remain dialable. \`owner_people_search\` only if you still need a different number. Take **wireless** only if the address matches. \`record_owner_cell\`
 6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells. \`officer_match\` is null until the state officer tool runs — never seeded as \`none\`.
 
 Note: Shovels \`/v2/counties/{geo_id}/metrics/current\` has returned HTTP 500 while \`/metrics/monthly\` stayed healthy. Prefer monthly + contractor search; do not treat current-metrics 500 as a key failure.
@@ -106,6 +106,7 @@ Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`
 | score_calling_list | No | Free owner vs office score (resume via only_unscored) |
 | match_texas_officers | No | Comptroller PIR officers (TX entities) |
 | match_florida_officers | No | Sunbiz officers (FL entities; optional key if Cloudflare blocks) |
+| recompute_officer_dial_status | No | Restore dial_status from stored officers (no registry calls) |
 | lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
 | owner_people_search | No | Google / people-search URLs |
 | record_owner_cell | No | Save a confirmed wireless |

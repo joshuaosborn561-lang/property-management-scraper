@@ -162,6 +162,7 @@ export function mountMcpHttp(app: Express): void {
         'score_calling_list',
         'match_texas_officers',
         'match_florida_officers',
+        'recompute_officer_dial_status',
         'lookup_line_type',
         'owner_people_search',
         'record_owner_cell',

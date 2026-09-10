@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { computeDialStatus } from './contactScore.js';
+import { computeDialStatus, contactLooksLikePerson, nextOfficerMatch } from './contactScore.js';
 import { nanpDigits } from './veriphone.js';
 
 describe('nanpDigits', () => {
@@ -31,7 +31,7 @@ describe('computeDialStatus', () => {
     );
   });
 
-  it('does not treat registered-agent-only as owner identity', () => {
+  it('does not treat registered-agent-only as owner identity, but keeps a verified mobile dialable', () => {
     assert.equal(
       computeDialStatus({
         owner_score: 'owner_likely',
@@ -40,11 +40,11 @@ describe('computeDialStatus', () => {
         officer_match: 'agent',
         owner_cell: null,
       }),
-      'needs_enrichment',
+      'mobile_unverified_owner',
     );
   });
 
-  it('does not treat a different officer as the Shovels phone owner', () => {
+  it('does not demote a verified mobile when the officer is a different person', () => {
     assert.equal(
       computeDialStatus({
         owner_score: 'owner_likely',
@@ -53,7 +53,20 @@ describe('computeDialStatus', () => {
         officer_match: 'different',
         owner_cell: null,
       }),
-      'needs_enrichment',
+      'mobile_unverified_owner',
+    );
+  });
+
+  it('promotes a resolved officer + mobile to owner_cell (PermitStack company contact)', () => {
+    assert.equal(
+      computeDialStatus({
+        owner_score: 'no_dm',
+        email_kind: 'generic',
+        line_type: 'mobile',
+        officer_match: 'resolved',
+        owner_cell: null,
+      }),
+      'owner_cell',
     );
   });
 
@@ -103,6 +116,54 @@ describe('computeDialStatus', () => {
         owner_cell: null,
       }),
       'skip',
+    );
+  });
+});
+
+describe('contactLooksLikePerson / nextOfficerMatch', () => {
+  it('treats PermitStack company contacts as not a person', () => {
+    assert.equal(contactLooksLikePerson('ADERHOLD ROOFING CORPORATION', 'ADERHOLD ROOFING CORPORATION'), false);
+    assert.equal(contactLooksLikePerson('CERTIFIED BUILDERS INC', 'CERTIFIED BUILDERS INC'), false);
+    assert.equal(contactLooksLikePerson('John Doe', 'ADERHOLD ROOFING CORPORATION'), true);
+  });
+
+  it('reinterprets company-name different + officer_name as resolved', () => {
+    assert.equal(
+      nextOfficerMatch({
+        officer_match: 'different',
+        officer_name: 'ADERHOLD BRIAN P',
+        contact_name: 'ADERHOLD ROOFING CORPORATION',
+        company_name: 'ADERHOLD ROOFING CORPORATION',
+        owner_score: 'no_dm',
+        evidence: 'Shovels name looks like the company, not a person',
+      }),
+      'resolved',
+    );
+  });
+
+  it('leaves a genuine person-name conflict as different', () => {
+    assert.equal(
+      nextOfficerMatch({
+        officer_match: 'different',
+        officer_name: 'JANE SMITH',
+        contact_name: 'John Doe',
+        company_name: 'ACME ROOFING LLC',
+        owner_score: 'owner_likely',
+      }),
+      'different',
+    );
+  });
+
+  it('does not rewrite existing match rows', () => {
+    assert.equal(
+      nextOfficerMatch({
+        officer_match: 'match',
+        officer_name: 'SANJAY CHANDRANAS',
+        contact_name: 'SANJAY CHANDRAHAS',
+        company_name: 'TOM PLUMBER INC',
+        owner_score: 'owner_likely',
+      }),
+      'match',
     );
   });
 });

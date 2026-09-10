@@ -61,6 +61,18 @@ describe('pickOwnerOfficer', () => {
     assert.equal(picked.match, 'match');
     assert.equal(picked.officer?.name, 'SANJAY CHANDRANAS');
   });
+
+  it('resolves a PermitStack company contact to the officer instead of different', () => {
+    const picked = pickOwnerOfficer('TOM PLUMBER INC', entity, 'TOM PLUMBER INC');
+    assert.equal(picked.match, 'resolved');
+    assert.equal(picked.officer?.name, 'SANJAY CHANDRANAS');
+  });
+
+  it('keeps different when a person contact conflicts with the officer', () => {
+    const picked = pickOwnerOfficer('JANE SMITH', entity, 'TOM PLUMBER INC');
+    assert.equal(picked.match, 'different');
+    assert.equal(picked.officer?.name, 'SANJAY CHANDRANAS');
+  });
 });
 
 describe('TexasCpaError', () => {

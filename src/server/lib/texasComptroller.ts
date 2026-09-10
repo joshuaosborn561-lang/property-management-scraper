@@ -1,4 +1,5 @@
 import { getSetting, loadAppSettings } from './appSettings.js';
+import { contactLooksLikePerson } from './contactScore.js';
 
 /** Official website proxy — same officer data, no API key. */
 const PUBLIC_BASE = 'https://comptroller.texas.gov/data-search/franchise-tax';
@@ -313,18 +314,21 @@ export function pickBestEntity(
 export function pickOwnerOfficer(
   contactName: string,
   entity: ComptrollerEntity,
-): { officer: ComptrollerOfficer | null; match: 'match' | 'different' | 'none' | 'agent' } {
+  companyName = '',
+): { officer: ComptrollerOfficer | null; match: 'match' | 'resolved' | 'different' | 'none' | 'agent' } {
   const real = entity.officers.filter((o) => o.name && !o.is_registered_agent);
   if (!real.length) {
     if (entity.officers.length) return { officer: entity.officers[0]!, match: 'agent' };
     return { officer: null, match: 'none' };
   }
-  if (contactName) {
+  const ranked = [...real].sort((a, b) => rankTitle(b.title) - rankTitle(a.title));
+  if (contactLooksLikePerson(contactName, companyName)) {
     const hit = real.find((o) => namesLooselyMatch(o.name, contactName));
     if (hit) return { officer: hit, match: 'match' };
+    return { officer: ranked[0]!, match: 'different' };
   }
-  const ranked = [...real].sort((a, b) => rankTitle(b.title) - rankTitle(a.title));
-  return { officer: ranked[0]!, match: contactName ? 'different' : 'none' };
+  // Company (or empty) contact: a returned officer is a resolution, not a mismatch.
+  return { officer: ranked[0]!, match: 'resolved' };
 }
 
 function rankTitle(title: string): number {

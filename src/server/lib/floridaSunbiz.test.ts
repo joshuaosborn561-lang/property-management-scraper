@@ -149,6 +149,14 @@ describe('pickSunbizOwnerOfficer', () => {
     assert.equal(picked.match, 'match');
     assert.equal(picked.officer?.name, 'JOHN A DOE');
   });
+
+  it('resolves a company contact_name to the officer instead of different', () => {
+    const entity = parseDetailHtml(DETAIL_HTML);
+    assert.ok(entity);
+    const picked = pickSunbizOwnerOfficer('TAMPA ROOFING COMPANY', entity!, 'TAMPA ROOFING COMPANY');
+    assert.equal(picked.match, 'resolved');
+    assert.equal(picked.officer?.name, 'JOHN A DOE');
+  });
 });
 
 describe('looksLikeCloudflareChallenge', () => {
@@ -443,5 +451,8 @@ describe('isRetryableFloridaOfficerMatch', () => {
     assert.equal(isRetryableFloridaOfficerMatch('unavailable'), true);
     assert.equal(isRetryableFloridaOfficerMatch('none'), false);
     assert.equal(isRetryableFloridaOfficerMatch('match'), false);
+    assert.equal(isRetryableFloridaOfficerMatch('resolved'), false);
+    assert.equal(isRetryableFloridaOfficerMatch('different'), false);
+    assert.equal(isRetryableFloridaOfficerMatch('agent'), false);
   });
 });

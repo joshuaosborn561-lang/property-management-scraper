@@ -25,6 +25,7 @@ import {
   matchTexasOfficers,
   ownerPeopleSearch,
   recordOwnerCell,
+  recomputeOfficerDialStatus,
   scoreCallingList,
 } from '../server/services/enrichCallingList.js';
 import { buildOperators } from '../server/services/operators.js';
@@ -1028,7 +1029,7 @@ WHAT IT DOES: Flags owner-likely vs company-line. $0. Default only_unscored=true
     {
       title: 'Match Texas Comptroller officers (free PIR)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for Texas companies on a calling list.
-WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/agent/error/unavailable so re-runs advance — do not use next_offset while that filter is on. Never-attempted is officer_match=null (not none). Out-of-state rows are marked unavailable (Florida rows can still be retried with match_florida_officers). Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner).`,
+WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/resolved/none/different/agent/error/unavailable so re-runs advance — do not use next_offset while that filter is on. Never-attempted is officer_match=null (not none). Out-of-state rows are marked unavailable (Florida rows can still be retried with match_florida_officers). Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner) — a verified mobile stays mobile_unverified_owner. PermitStack company contacts that get an officer are officer_match=resolved (not different) and a verified mobile becomes owner_cell. Each run also recomputes already-stored officer rows on this list (no Comptroller calls).`,
       inputSchema: {
         list_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional().describe('Default 80. Max 100; one call should finish within the 48s budget.'),
@@ -1054,7 +1055,7 @@ WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s s
     {
       title: 'Match Florida Sunbiz officers (public records)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for Florida companies on a calling list. Equivalent to match_texas_officers but against search.sunbiz.org.
-WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Public HTML is tried first. Default limit 40 (80 only if a usable keyed API is available). only_unmatched=true skips match/none/different/agent so re-runs advance — officer_match=error and Texas-stamped unavailable Florida rows ARE retried (a bad key previously stamped error; do not require only_unmatched=false). Non-Florida rows are skipped (left unmatched). officer_match=agent is registered agent only (not the owner). If this host is Cloudflare-blocked AND the keyed API 401/403s, the call returns ok=false without writing rows. A rejected key falls back to public HTML (key_status=rejected_falling_back_to_html) instead of stamping every row error. Malformed keys (pasted curl) report configured=false reason=malformed.`,
+WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Public HTML is tried first. Default limit 40 (80 only if a usable keyed API is available). only_unmatched=true skips match/resolved/none/different/agent so re-runs advance — officer_match=error and Texas-stamped unavailable Florida rows ARE retried (a bad key previously stamped error; do not require only_unmatched=false). Non-Florida rows are skipped (left unmatched). officer_match=agent is registered agent only (not the owner) — a verified mobile stays mobile_unverified_owner. PermitStack company contacts that get an officer are officer_match=resolved (not different) and a verified mobile becomes owner_cell. Each run also recomputes already-stored officer rows on this list (no Sunbiz calls). If this host is Cloudflare-blocked AND the keyed API 401/403s, the call returns ok=false without writing new lookup rows. A rejected key falls back to public HTML (key_status=rejected_falling_back_to_html) instead of stamping every row error. Malformed keys (pasted curl) report configured=false reason=malformed.`,
       inputSchema: {
         list_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional().describe('Default 40 without a key, 80 with florida_sos_api_key. One call should finish within the 48s budget.'),
@@ -1062,7 +1063,7 @@ WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Public HTML i
         only_unmatched: z
           .boolean()
           .optional()
-          .describe('Default true. Rows already match/none/different/agent are skipped. officer_match=error and Texas-stamped unavailable Florida rows are retried.'),
+          .describe('Default true. Rows already match/resolved/none/different/agent are skipped. officer_match=error and Texas-stamped unavailable Florida rows are retried.'),
         reset_errors: z
           .boolean()
           .optional()
@@ -1075,6 +1076,28 @@ WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Public HTML i
         return jsonResult(await matchFloridaOfficers(args));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : 'match_florida_officers failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'recompute_officer_dial_status',
+    {
+      title: 'Recompute officer dial_status (no registry calls)',
+      description: `WHEN TO USE: After the officerBlocksPhone scoring fix, to restore verified mobiles that were demoted to needs_enrichment when officer_match was agent or different.
+WHAT IT DOES: Reads stored officer_name / officer_match and rewrites dial_status. No Sunbiz or Comptroller traffic. Company-name contacts with an officer become officer_match=resolved and a verified mobile becomes owner_cell. agent mobiles return to mobile_unverified_owner. Existing match rows are unchanged. confirm=true required for all lists; pass list_id to limit to one list.`,
+      inputSchema: {
+        list_id: z.string().optional(),
+        all_lists: z.boolean().optional().describe('Default true when list_id is omitted.'),
+        confirm: z.boolean().optional().describe('Required true to write when scanning all lists.'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await recomputeOfficerDialStatus(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'recompute_officer_dial_status failed');
       }
     },
   );

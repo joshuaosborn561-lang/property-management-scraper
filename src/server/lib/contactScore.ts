@@ -40,6 +40,18 @@ function emailLocal(email: string): string {
   return t.split('@', 1)[0] || '';
 }
 
+/** True when contact_name is a person, not the company copied into the name field. */
+export function contactLooksLikePerson(contactName: string, companyName = ''): boolean {
+  const contact = (contactName || '').trim();
+  const company = (companyName || '').trim();
+  return (
+    Boolean(contact) &&
+    contact.split(/\s+/).length >= 2 &&
+    !COMPANY_IN_NAME.test(contact) &&
+    contact.toUpperCase() !== company.toUpperCase()
+  );
+}
+
 function firstToken(name: string): string {
   const n = name.replace(/[^A-Za-z ]/g, ' ').trim();
   return (n.split(/\s+/)[0] || '').toLowerCase();
@@ -56,11 +68,7 @@ export function scoreContact(input: ScoreInput): ContactScore {
   const contact = (input.contact_name || '').trim();
   const company = (input.company_name || '').trim();
   const local = emailLocal(input.email);
-  const personish =
-    Boolean(contact) &&
-    contact.split(/\s+/).length >= 2 &&
-    !COMPANY_IN_NAME.test(contact) &&
-    contact.toUpperCase() !== company.toUpperCase();
+  const personish = contactLooksLikePerson(contact, company);
 
   if (!phone) {
     return {
@@ -136,7 +144,33 @@ export function scoreContact(input: ScoreInput): ContactScore {
   };
 }
 
-export type OfficerMatch = 'match' | 'different' | 'none' | 'agent' | 'error';
+export type OfficerMatch = 'match' | 'resolved' | 'different' | 'none' | 'agent' | 'error';
+
+/** Company-name contacts that already have a human officer were stamped `different`. Reinterpret as `resolved`. */
+export function nextOfficerMatch(opts: {
+  officer_match: string | null | undefined;
+  officer_name?: string | null;
+  contact_name?: string | null;
+  company_name?: string | null;
+  owner_score?: string | null;
+  evidence?: string | null;
+}): string | null {
+  const current = opts.officer_match ?? null;
+  const companyContact =
+    opts.owner_score === 'no_dm' ||
+    /looks like the company, not a person/i.test(opts.evidence || '') ||
+    !contactLooksLikePerson(opts.contact_name || '', opts.company_name || '');
+  if (current === 'different' && opts.officer_name && companyContact) {
+    return 'resolved';
+  }
+  return current;
+}
+
+const DIALABLE = new Set(['owner_cell', 'mobile_unverified_owner']);
+
+export function isDialableStatus(status: string | null | undefined): boolean {
+  return DIALABLE.has(String(status || ''));
+}
 
 export function computeDialStatus(opts: {
   owner_score: OwnerScore | string;
@@ -149,17 +183,15 @@ export function computeDialStatus(opts: {
   if (opts.owner_score === 'skip' || opts.line_type === 'invalid') return 'skip';
   const mobile = opts.line_type === 'mobile';
   const landline = opts.line_type === 'landline' || opts.line_type === 'voip';
-  // agent = registered agent only (CT Corp etc.) — not an owner. different = legal
-  // officer is not the Shovels PM, so the Shovels phone is not the owner cell.
-  const identity = opts.officer_match === 'match' || opts.email_kind === 'name_match';
-  // Officer-confirmed mobile wins over a generic/info email (office_likely).
+  // match = contact person equals officer. resolved = contact was the company; registry named the human.
+  const identity =
+    opts.officer_match === 'match' ||
+    opts.officer_match === 'resolved' ||
+    opts.email_kind === 'name_match';
   if (mobile && identity) return 'owner_cell';
   if (landline && identity) return 'owner_landline';
+  // Verified mobile stays dialable. agent/different must not demote to needs_enrichment.
+  if (mobile) return 'mobile_unverified_owner';
   if (opts.owner_score === 'office_likely' || opts.line_type === 'toll_free') return 'company_line';
-  // Out-of-state / no officer source: a verified mobile is dialable, but not
-  // owner-confirmed. Do not strand Florida (etc.) rows as needs_enrichment.
-  const officerBlocksPhone =
-    opts.officer_match === 'agent' || opts.officer_match === 'different';
-  if (mobile && !officerBlocksPhone) return 'mobile_unverified_owner';
   return 'needs_enrichment';
 }

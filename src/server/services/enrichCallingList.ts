@@ -2,6 +2,8 @@ import { getSupabase, hasSupabase, ingestSecret } from '../lib/supabase.js';
 import { supabaseTargetMeta } from '../lib/supabaseTarget.js';
 import {
   computeDialStatus,
+  isDialableStatus,
+  nextOfficerMatch,
   scoreContact,
   type DialStatus,
   type OwnerScore,
@@ -35,6 +37,7 @@ import {
   nanpDigits,
 } from '../lib/veriphone.js';
 import { loadAppSettings } from '../lib/appSettings.js';
+import { listCallingLists } from './callingLists.js';
 
 export interface EnrichmentRow {
   list_id: string;
@@ -87,6 +90,15 @@ function countBy(rows: EnrichmentRow[], key: keyof EnrichmentRow) {
 }
 
 function applyDial(row: EnrichmentRow): EnrichmentRow {
+  const previousDial = row.dial_status;
+  row.officer_match = nextOfficerMatch({
+    officer_match: row.officer_match,
+    officer_name: row.officer_name,
+    contact_name: row.contact_name,
+    company_name: row.company_name,
+    owner_score: row.owner_score,
+    evidence: row.evidence,
+  });
   row.dial_status = computeDialStatus({
     owner_score: row.owner_score || 'needs_enrichment',
     email_kind: row.email_kind || null,
@@ -94,11 +106,98 @@ function applyDial(row: EnrichmentRow): EnrichmentRow {
     officer_match: row.officer_match || null,
     owner_cell: row.owner_cell || null,
   });
+  if (isDialableStatus(previousDial) && row.dial_status === 'needs_enrichment') {
+    row.dial_status = previousDial === 'owner_cell' ? 'owner_cell' : 'mobile_unverified_owner';
+  }
   if (row.dial_status === 'owner_cell' && !row.owner_cell && row.phone) {
     row.owner_cell = row.phone;
     row.owner_cell_source = row.owner_cell_source || 'shovels_mobile';
   }
   return row;
+}
+
+function officerRowChanged(
+  before: { officer_match?: string | null; dial_status?: string | null; owner_cell?: string | null },
+  after: EnrichmentRow,
+): boolean {
+  return (
+    after.officer_match !== before.officer_match ||
+    after.dial_status !== before.dial_status ||
+    after.owner_cell !== before.owner_cell
+  );
+}
+
+/** Recompute verdicts/dial_status for rows that already have registry data. Does not re-fetch. */
+async function recomputeExistingOfficerRows(listId: string): Promise<EnrichmentRow[]> {
+  const all = await fetchContacts(listId, { limit: 8000, offset: 0, unmatchedOnly: false });
+  const changed: EnrichmentRow[] = [];
+  for (const row of all.rows) {
+    if (!row.officer_match || isRetryableFloridaOfficerMatch(row.officer_match)) continue;
+    const before = {
+      officer_match: row.officer_match,
+      dial_status: row.dial_status,
+      owner_cell: row.owner_cell,
+    };
+    applyDial(row);
+    if (officerRowChanged(before, row)) changed.push(row);
+  }
+  if (changed.length) await persistRows(changed, { writeOfficerMatch: true });
+  return changed;
+}
+
+/** No registry calls. Recompute officer_match/dial_status for stored officer rows. */
+export async function recomputeOfficerDialStatus(opts: {
+  list_id?: string;
+  all_lists?: boolean;
+  confirm?: boolean;
+}): Promise<Record<string, unknown>> {
+  const listId = (opts.list_id || '').trim();
+  const allLists = opts.all_lists === true || !listId;
+  if (allLists && opts.confirm !== true) {
+    return {
+      ok: false,
+      needs_confirm: true,
+      error:
+        'Would recompute dial_status for stored officer rows across calling lists (no Sunbiz/Comptroller calls). Set confirm=true. Pass list_id to limit to one list.',
+      ...supabaseTargetMeta(),
+    };
+  }
+  if (listId && opts.all_lists !== true) {
+    const changed = await recomputeExistingOfficerRows(listId);
+    return {
+      ok: true,
+      ...supabaseTargetMeta(),
+      lists: 1,
+      repaired: changed.length,
+      sample: sample(changed),
+      assistant_instructions:
+        'No registry calls. Company-name + officer is officer_match=resolved and a verified mobile becomes owner_cell. agent mobiles return to mobile_unverified_owner. Existing match rows are unchanged.',
+    };
+  }
+  const listed = await listCallingLists({ limit: 5000 });
+  const lists = (listed.lists as Array<{ id?: string }> | undefined) ?? [];
+  let repaired = 0;
+  let listsTouched = 0;
+  const samples: ReturnType<typeof sample> = [];
+  for (const list of lists) {
+    const id = String(list.id || '').trim();
+    if (!id) continue;
+    const changed = await recomputeExistingOfficerRows(id);
+    if (!changed.length) continue;
+    listsTouched += 1;
+    repaired += changed.length;
+    if (samples.length < 8) samples.push(...sample(changed, 8 - samples.length));
+  }
+  return {
+    ok: true,
+    ...supabaseTargetMeta(),
+    lists: lists.length,
+    lists_repaired: listsTouched,
+    repaired,
+    sample: samples,
+    assistant_instructions:
+      'No registry calls. Re-run was a scoring recompute of stored officer_name rows. Query dial_status=owner_cell and mobile_unverified_owner. Do not dump the list.',
+  };
 }
 
 export interface FetchContactsOpts {
@@ -313,6 +412,12 @@ export async function matchTexasOfficers(opts: {
   }
   const onlyUnmatched = opts.only_unmatched !== false;
   const limit = opts.limit ?? OFFICER_DEFAULT_LIMIT;
+  let repaired: EnrichmentRow[] = [];
+  try {
+    repaired = await recomputeExistingOfficerRows(opts.list_id.trim());
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'officer dial recompute failed' };
+  }
   const fetched = await fetchContacts(opts.list_id.trim(), {
     limit,
     offset: opts.offset ?? 0,
@@ -320,6 +425,7 @@ export async function matchTexasOfficers(opts: {
   });
   const targets = fetched.rows.filter((r) => Boolean(r.company_name || r.contact_name));
   let matched = 0;
+  let resolved = 0;
   let different = 0;
   let none = 0;
   let agent = 0;
@@ -346,17 +452,16 @@ export async function matchTexasOfficers(opts: {
     try {
       const hits = await searchFranchiseEntities(row.company_name || '');
       const ranked = rankFranchiseHits(row.company_name || '', hits);
-      let resolved = false;
+      let foundEntity = false;
       for (const cand of ranked) {
         try {
           const entity = await getFranchiseAccount(cand.taxpayerId);
           if (!entity) continue;
-          const picked = pickOwnerOfficer(row.contact_name || '', entity);
+          const picked = pickOwnerOfficer(row.contact_name || '', entity, row.company_name || '');
           row.taxpayer_id = entity.taxpayer_id;
           row.officer_match = picked.match;
           if (picked.match === 'agent') {
-            // Registered agent ≠ owner. Do not seed people-search with CT Corp.
-            row.officer_name = null;
+            row.officer_name = picked.officer?.name ?? null;
             row.officer_title = picked.officer?.title || 'registered agent';
             appendEvidence(
               row,
@@ -371,17 +476,18 @@ export async function matchTexasOfficers(opts: {
             row.officer_state = picked.officer?.state ?? row.state ?? 'TX';
             row.officer_zip = picked.officer?.zip ?? row.zip ?? null;
             if (picked.match === 'match') matched += 1;
+            else if (picked.match === 'resolved') resolved += 1;
             else if (picked.match === 'different') different += 1;
             else none += 1;
           }
-          resolved = true;
+          foundEntity = true;
           break;
         } catch (err) {
           if (err instanceof TexasCpaError && err.notFranchiseTax) continue;
           throw err;
         }
       }
-      if (!resolved) {
+      if (!foundEntity) {
         row.officer_match = 'none';
         if (ranked.length) {
           appendEvidence(row, 'Texas CPA: no franchise-tax account for this name (sole prop / partnership)');
@@ -414,10 +520,12 @@ export async function matchTexasOfficers(opts: {
     processed: processed.length,
     attempted: targets.length,
     matched,
+    resolved,
     different,
     none,
     agent,
     errors,
+    repaired: repaired.length,
     timed_out: timedOut,
     budget_ms: OFFICER_BUDGET_MS,
     list_total: fetched.total,
@@ -426,7 +534,7 @@ export async function matchTexasOfficers(opts: {
     // only_unmatched filters in SQL; offset stays unused. null avoids "0 while has_more".
     next_offset: onlyUnmatched ? null : fetched.offset + processed.length,
     resume_with: onlyUnmatched ? { only_unmatched: true, limit } : { offset: fetched.offset + processed.length, limit },
-    by_officer_match: { match: matched, different, none, agent, unavailable, errors },
+    by_officer_match: { match: matched, resolved, different, none, agent, unavailable, errors },
     sample: sample(processed),
     assistant_instructions: remaining
       ? `Processed ${processed.length}; ${remaining} still unmatched. Re-run match_texas_officers(only_unmatched=true, limit=${limit}). Do not pass next_offset while only_unmatched=true — the unmatched filter is the pager. Sole-prop / person-name companies with no franchise-tax account are officer_match=none (not error). Out-of-state rows are officer_match=unavailable. Do not dump the list.`
@@ -495,6 +603,13 @@ export async function matchFloridaOfficers(opts: {
   if (!hasFloridaSunbiz()) {
     return { ok: false, error: 'Florida officer source is unavailable.' };
   }
+  const listId = opts.list_id.trim();
+  let repaired: EnrichmentRow[] = [];
+  try {
+    repaired = await recomputeExistingOfficerRows(listId);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'officer dial recompute failed' };
+  }
   const prepared = await prepareFloridaSunbizRun();
   const onlyUnmatched = opts.only_unmatched !== false;
   const limit = opts.limit ?? (prepared.api_usable ? OFFICER_DEFAULT_LIMIT : FLORIDA_OFFICER_DEFAULT_LIMIT);
@@ -503,7 +618,7 @@ export async function matchFloridaOfficers(opts: {
   let remainingHint: number;
   try {
     const page = await fetchFloridaOfficerTargets({
-      list_id: opts.list_id.trim(),
+      list_id: listId,
       limit,
       offset: opts.offset ?? 0,
       only_unmatched: onlyUnmatched,
@@ -513,9 +628,10 @@ export async function matchFloridaOfficers(opts: {
     targets = page.targets;
     remainingHint = page.remaining;
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'fetch contacts failed' };
+    return { ok: false, error: err instanceof Error ? err.message : 'fetch contacts failed', repaired: repaired.length };
   }
   let matched = 0;
+  let resolvedHits = 0;
   let different = 0;
   let none = 0;
   let agent = 0;
@@ -539,15 +655,15 @@ export async function matchFloridaOfficers(opts: {
     }
     try {
       const hits = await searchSunbizEntities(row.company_name || '');
-      let resolved = false;
+      let foundEntity = false;
       for (const cand of hits) {
         const entity = await getSunbizEntity(cand);
         if (!entity) continue;
-        const picked = pickSunbizOwnerOfficer(row.contact_name || '', entity);
+        const picked = pickSunbizOwnerOfficer(row.contact_name || '', entity, row.company_name || '');
         row.taxpayer_id = entity.document_number;
         row.officer_match = picked.match;
         if (picked.match === 'agent') {
-          row.officer_name = null;
+          row.officer_name = picked.officer?.name ?? null;
           row.officer_title = picked.officer?.title || 'registered agent';
           appendEvidence(
             row,
@@ -562,13 +678,14 @@ export async function matchFloridaOfficers(opts: {
           row.officer_state = picked.officer?.state ?? row.state ?? 'FL';
           row.officer_zip = picked.officer?.zip ?? row.zip ?? null;
           if (picked.match === 'match') matched += 1;
+          else if (picked.match === 'resolved') resolvedHits += 1;
           else if (picked.match === 'different') different += 1;
           else none += 1;
         }
-        resolved = true;
+        foundEntity = true;
         break;
       }
-      if (!resolved) {
+      if (!foundEntity) {
         row.officer_match = 'none';
         if (hits.length) {
           appendEvidence(row, 'Florida Sunbiz: no officer roster for this name');
@@ -596,6 +713,7 @@ export async function matchFloridaOfficers(opts: {
           error: msg,
           ...supabaseTargetMeta(),
           processed: 0,
+          repaired: repaired.length,
           remaining_unmatched: remainingHint + targets.length,
           assistant_instructions:
             status === 'malformed'
@@ -618,10 +736,12 @@ export async function matchFloridaOfficers(opts: {
     processed: processed.length,
     attempted: targets.length,
     matched,
+    resolved: resolvedHits,
     different,
     none,
     agent,
     errors,
+    repaired: repaired.length,
     timed_out: timedOut,
     budget_ms: OFFICER_BUDGET_MS,
     list_total: fetched.total,
@@ -635,7 +755,7 @@ export async function matchFloridaOfficers(opts: {
           ...(opts.reset_errors === true ? { reset_errors: true } : {}),
         }
       : { offset: fetched.offset + processed.length, limit },
-    by_officer_match: { match: matched, different, none, agent, errors },
+    by_officer_match: { match: matched, resolved: resolvedHits, different, none, agent, errors },
     sample: sample(processed),
     assistant_instructions: remaining
       ? `Processed ${processed.length}; ${remaining} Florida rows still unmatched. Re-run match_florida_officers(only_unmatched=true, limit=${limit}). officer_match=error is retryable. Do not pass next_offset while only_unmatched=true. officer_match=agent is registered-agent-only (not an owner). Non-Florida rows are skipped (left unmatched for match_texas_officers). Do not dump the list.`
@@ -794,8 +914,8 @@ export async function lookupLineTypes(opts: {
     sample: sample(processed),
     assistant_instructions:
       remaining > 0
-        ? `Looked up ${looked} (${markedInvalid} invalid phones marked, no Veriphone spend). ${remaining} still unknown. Re-run lookup_line_type(only_unknown=true, confirm=true, limit=${want}) — omit offset. match+mobile → owner_cell; verified mobile with no officer source → mobile_unverified_owner. agent/different still need people-search. Do not dump the list.`
-        : 'Show line-type counts and $ spent. query_calling_list(dial_status=owner_cell or mobile_unverified_owner). Leftovers (agent/different) go to owner_people_search.',
+        ? `Looked up ${looked} (${markedInvalid} invalid phones marked, no Veriphone spend). ${remaining} still unknown. Re-run lookup_line_type(only_unknown=true, confirm=true, limit=${want}) — omit offset. match/resolved+mobile → owner_cell; verified mobile with no owner identity → mobile_unverified_owner. Do not dump the list.`
+        : 'Show line-type counts and $ spent. query_calling_list(dial_status=owner_cell or mobile_unverified_owner). agent is still not the owner; people-search only if you need a different number.',
   };
 }
 

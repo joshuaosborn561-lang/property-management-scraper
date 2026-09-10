@@ -371,8 +371,8 @@ export function sunbizEntityToComptroller(entity: SunbizEntity): ComptrollerEnti
   };
 }
 
-export function pickSunbizOwnerOfficer(contactName: string, entity: SunbizEntity) {
-  return pickOwnerOfficer(contactName, sunbizEntityToComptroller(entity));
+export function pickSunbizOwnerOfficer(contactName: string, entity: SunbizEntity, companyName = '') {
+  return pickOwnerOfficer(contactName, sunbizEntityToComptroller(entity), companyName);
 }
 
 function htmlHeaders(): HeadersInit {

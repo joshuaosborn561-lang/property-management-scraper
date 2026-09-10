@@ -160,7 +160,7 @@ export async function enrichmentKeysStatus() {
       persist_allowed: floridaPersist,
     },
     assistant_instructions: floridaPersist
-      ? 'Show only masked fingerprints. Never echo full keys. Cayden sets missing ones with set_enrichment_api_key. florida_sos_api_key is optional — public Sunbiz HTML is tried first; a Sunbiz Daily (free) or sunbizdata (sb_) key is only needed if Cloudflare blocks this host. A pasted curl is configured=false reason=malformed, not a working key.'
+      ? 'Show only masked fingerprints. Never echo full keys. Cayden sets missing ones with set_enrichment_api_key. florida_sos_api_key is optional — public Sunbiz HTML is tried first; a Sunbiz Daily sb_ key (the X-API-Key header, not a second secret) is only needed if Cloudflare blocks this host. A pasted curl is configured=false reason=malformed, not a working key.'
       : 'florida_sos_api_key cannot be stored until Josh applies supabase/migrations/20260910_florida_sos_api_key_setting.sql on kemvxzhcxvynmoutwdrh. Do not report the key as saved. Show only masked fingerprints.',
   };
 }
@@ -219,7 +219,7 @@ export async function setAppSetting(opts: {
       return {
         ok: false,
         error:
-          'florida_sos_api_key is malformed — paste an sb_ sunbizdata key or a Sunbiz Daily X-API-Key, not a curl command.',
+          'florida_sos_api_key is malformed — paste the Sunbiz Daily sb_ token (that value is the X-API-Key header), not a curl command.',
         reason: 'malformed',
       };
     }

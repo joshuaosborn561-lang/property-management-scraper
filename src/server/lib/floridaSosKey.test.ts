@@ -11,10 +11,10 @@ describe('inspectFloridaSosKey', () => {
     assert.equal(info.reason, null);
   });
 
-  it('accepts a sunbizdata sb_ key', () => {
+  it('treats an sb_ token as a Sunbiz Daily X-API-Key', () => {
     const info = inspectFloridaSosKey('sb_live_testkey_123');
     assert.equal(info.status, 'ok');
-    assert.equal(info.provider, 'sunbizdata');
+    assert.equal(info.provider, 'sunbizdaily');
     assert.equal(info.usable, 'sb_live_testkey_123');
   });
 
@@ -44,7 +44,7 @@ describe('inspectFloridaSosKey', () => {
     assert.equal(info.status, 'salvaged');
     assert.equal(info.salvaged, true);
     assert.equal(info.usable, 'sb_salvaged_test_key');
-    assert.equal(info.provider, 'sunbizdata');
+    assert.equal(info.provider, 'sunbizdaily');
   });
 
   it('salvages a Bearer token from a pasted curl', () => {

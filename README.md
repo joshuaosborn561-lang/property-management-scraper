@@ -102,7 +102,7 @@ SUPABASE_INGEST_SECRET=
 SHOVELS_API_KEY=   # optional fallback; Cayden can set the live key from Claude
 VERIPHONE_API_KEY= # or paste via set_enrichment_api_key
 TEXAS_CPA_API_KEY= # Comptroller public API; or paste via Claude
-FLORIDA_SOS_API_KEY= # optional; Sunbiz Daily (free) or sunbizdata sb_ key if Cloudflare blocks public HTML
+FLORIDA_SOS_API_KEY= # optional; Sunbiz Daily sb_ token (sent as X-API-Key) if Cloudflare blocks public HTML
 ```
 
 ## Run

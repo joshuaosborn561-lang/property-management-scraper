@@ -1,5 +1,5 @@
 import { getSetting, loadAppSettings } from './appSettings.js';
-import { formatApiError, inspectFloridaSosKey, isSunbizdataKey } from './floridaSosKey.js';
+import { formatApiError, inspectFloridaSosKey } from './floridaSosKey.js';
 import {
   isRegisteredAgentName,
   namesLooselyMatch,
@@ -393,7 +393,7 @@ function throwIfBlocked(kind: 'search' | 'detail', res: Response, body: string):
   throw new FloridaSunbizError(
     kind,
     res.status,
-    'Florida Sunbiz blocked this host (Cloudflare). Set florida_sos_api_key via set_enrichment_api_key — Sunbiz Daily is free with a registered X-API-Key; sunbizdata.com keys start with sb_.',
+    'Florida Sunbiz blocked this host (Cloudflare). Set florida_sos_api_key via set_enrichment_api_key — Sunbiz Daily is free; the sb_ token is the X-API-Key header.',
     true,
   );
 }
@@ -611,6 +611,29 @@ async function getSunbizdata(hit: SunbizSearchHit, key: string): Promise<SunbizE
   return entityFromSunbizdata(body);
 }
 
+function isAuthFailure(err: unknown): err is FloridaSunbizError {
+  return err instanceof FloridaSunbizError && err.authFailure;
+}
+
+function isSunbizdataUrl(url: string): boolean {
+  return /sunbizdata\.com/i.test(url);
+}
+
+/** Daily first: official keys are `sb_…` sent as `X-API-Key`. sunbizdata.com is a different product with the same prefix. */
+async function withKeyedProviderFallback<T>(daily: () => Promise<T>, data: () => Promise<T>): Promise<T> {
+  try {
+    return await daily();
+  } catch (err) {
+    if (!isAuthFailure(err)) throw err;
+    try {
+      return await data();
+    } catch (second) {
+      if (isAuthFailure(second)) throw err;
+      throw second;
+    }
+  }
+}
+
 async function searchViaApi(name: string): Promise<SunbizSearchHit[]> {
   const key = sosKey();
   if (!key) {
@@ -621,7 +644,10 @@ async function searchViaApi(name: string): Promise<SunbizSearchHit[]> {
       { blocked: true },
     );
   }
-  return isSunbizdataKey(key) ? searchSunbizdata(name, key) : searchSunbizdaily(name, key);
+  return withKeyedProviderFallback(
+    () => searchSunbizdaily(name, key),
+    () => searchSunbizdata(name, key),
+  );
 }
 
 async function getViaApi(hit: SunbizSearchHit): Promise<SunbizEntity | null> {
@@ -629,7 +655,23 @@ async function getViaApi(hit: SunbizSearchHit): Promise<SunbizEntity | null> {
   if (!key) {
     throw new FloridaSunbizError('detail', 403, 'florida_sos_api_key is not set.', { blocked: true });
   }
-  return isSunbizdataKey(key) ? getSunbizdata(hit, key) : getSunbizdaily(hit, key);
+  if (isSunbizdataUrl(hit.detail_url)) {
+    return getSunbizdata(hit, key);
+  }
+  const dailyHit: SunbizSearchHit = /sunbizdaily\.com/i.test(hit.detail_url)
+    ? hit
+    : {
+        ...hit,
+        detail_url: `${SUNBIZDAILY_BASE}/filings/${encodeURIComponent(hit.document_number)}/`,
+      };
+  const dataHit: SunbizSearchHit = {
+    ...hit,
+    detail_url: `${SUNBIZDATA_BASE}/corporations/${encodeURIComponent(hit.document_number)}`,
+  };
+  return withKeyedProviderFallback(
+    () => getSunbizdaily(dailyHit, key),
+    () => getSunbizdata(dataHit, key),
+  );
 }
 
 function markApiRejected(): void {

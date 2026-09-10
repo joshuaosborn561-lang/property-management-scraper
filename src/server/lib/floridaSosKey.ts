@@ -47,10 +47,6 @@ function stringifyUnknown(value: unknown): string {
   }
 }
 
-export function isSunbizdataKey(key: string): boolean {
-  return /^sb_/i.test(key.trim());
-}
-
 function looksLikeBareKey(value: string): boolean {
   if (value.length < 8) return false;
   if (/\s/.test(value)) return false;
@@ -108,10 +104,12 @@ export function inspectFloridaSosKey(raw: string | null | undefined): FloridaSos
     };
   }
 
+  // Sunbiz Daily documents keys as `sb_<32 chars>` in the X-API-Key header.
+  // That prefix is not unique to sunbizdata.com — routing tries Daily first.
   return {
     raw: trimmed,
     usable,
-    provider: isSunbizdataKey(usable) ? 'sunbizdata' : 'sunbizdaily',
+    provider: 'sunbizdaily',
     status: salvaged ? 'salvaged' : 'ok',
     reason: null,
     salvaged,

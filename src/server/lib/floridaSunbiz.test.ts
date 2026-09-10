@@ -237,6 +237,108 @@ describe('searchSunbizEntities fetch', { concurrency: false }, () => {
     assert.equal(entity?.document_number, 'P97000071529');
   });
 
+  it('sends an sb_ key to Sunbiz Daily as X-API-Key, not to sunbizdata.com', async () => {
+    await setAppSetting({
+      key: 'florida_sos_api_key',
+      api_key: 'sb_official_daily_test_key',
+      persist: false,
+      set_by: 'test',
+    });
+    const hosts: string[] = [];
+    const headersSeen: string[] = [];
+    setFloridaSunbizFetch(async (input, init) => {
+      const url = String(input);
+      hosts.push(url);
+      const headers = new Headers(init?.headers);
+      if (headers.get('X-API-Key')) headersSeen.push(`X-API-Key:${headers.get('X-API-Key')}`);
+      if (headers.get('x-api-key') && !headers.get('X-API-Key')) {
+        headersSeen.push(`x-api-key:${headers.get('x-api-key')}`);
+      }
+      if (url.includes('search.sunbiz.org')) {
+        return new Response('Just a moment', { status: 403 });
+      }
+      if (url.includes('sunbizdata.com')) {
+        return new Response(JSON.stringify({ error: 'wrong host' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('sunbizdaily.com') && url.includes('P97000071529') && /filings\/P97000071529/.test(url)) {
+        return new Response(
+          JSON.stringify({
+            corporation_number: 'P97000071529',
+            corporation_name: 'WALT DISNEY PARKS AND RESORTS U.S., INC.',
+            status: 'A',
+            officers: [],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('sunbizdaily.com')) {
+        return new Response(
+          JSON.stringify({
+            filings: [
+              {
+                corporation_number: 'P97000071529',
+                corporation_name: 'WALT DISNEY PARKS AND RESORTS U.S., INC.',
+                status: 'A',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('nope', { status: 404 });
+    });
+    const hits = await searchSunbizEntities('WALT DISNEY PARKS AND RESORTS U.S., INC.');
+    assert.equal(hits[0]?.document_number, 'P97000071529');
+    assert.ok(hosts.some((u) => u.includes('sunbizdaily.com')));
+    assert.equal(hosts.some((u) => u.includes('sunbizdata.com')), false);
+    assert.ok(headersSeen.some((h) => h.startsWith('X-API-Key:sb_official_daily_test_key')));
+  });
+
+  it('falls back to sunbizdata.com only after Sunbiz Daily rejects the key', async () => {
+    await setAppSetting({
+      key: 'florida_sos_api_key',
+      api_key: 'sb_data_only_test_key',
+      persist: false,
+      set_by: 'test',
+    });
+    const hosts: string[] = [];
+    setFloridaSunbizFetch(async (input) => {
+      const url = String(input);
+      hosts.push(url);
+      if (url.includes('search.sunbiz.org')) {
+        return new Response('Just a moment', { status: 403 });
+      }
+      if (url.includes('sunbizdaily.com')) {
+        return new Response(JSON.stringify({ error: { code: 401, message: 'invalid key' } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('sunbizdata.com')) {
+        return new Response(
+          JSON.stringify({
+            results: [
+              {
+                documentNumber: 'P97000071529',
+                corporationName: 'WALT DISNEY PARKS AND RESORTS U.S., INC.',
+                status: 'A',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('nope', { status: 404 });
+    });
+    const hits = await searchSunbizEntities('WALT DISNEY PARKS AND RESORTS U.S., INC.');
+    assert.equal(hits[0]?.document_number, 'P97000071529');
+    assert.ok(hosts.some((u) => u.includes('sunbizdaily.com')));
+    assert.ok(hosts.some((u) => u.includes('sunbizdata.com')));
+  });
+
   it('uses public HTML first even when a keyed API would 401', async () => {
     await setAppSetting({
       key: 'florida_sos_api_key',

@@ -19,11 +19,13 @@ import {
 import {
   FloridaSunbizError,
   floridaOfficerGapMs,
+  floridaSunbizKeyStatus,
   getSunbizEntity,
-  hasFloridaSosKey,
   hasFloridaSunbiz,
   isFloridaRowState,
+  isRetryableFloridaOfficerMatch,
   pickSunbizOwnerOfficer,
+  prepareFloridaSunbizRun,
   searchSunbizEntities,
 } from '../lib/floridaSunbiz.js';
 import {
@@ -155,9 +157,13 @@ function isFloridaRow(row: EnrichmentRow): boolean {
 
 function isPendingFloridaOfficer(row: EnrichmentRow): boolean {
   if (!isFloridaRow(row)) return false;
-  if (row.officer_match == null || row.officer_match === '') return true;
-  // Texas already stamped FL rows unavailable; retry them here.
-  return row.officer_match === 'unavailable';
+  return isRetryableFloridaOfficerMatch(row.officer_match);
+}
+
+function looksLikeFloridaTransportEvidence(evidence: string | null | undefined): boolean {
+  return /sunbizdata search 40[13]|Sunbiz Daily search 40[13]|Florida Sunbiz blocked|\[object Object\]/i.test(
+    evidence || '',
+  );
 }
 
 async function persistRows(
@@ -439,6 +445,7 @@ async function fetchFloridaOfficerTargets(opts: {
   limit: number;
   offset: number;
   only_unmatched: boolean;
+  reset_errors?: boolean;
 }): Promise<{ fetched: FetchContactsResult; targets: EnrichmentRow[]; remaining: number }> {
   if (opts.only_unmatched) {
     const unmatched = await fetchContacts(opts.list_id, {
@@ -448,7 +455,9 @@ async function fetchFloridaOfficerTargets(opts: {
     });
     const pendingNull = unmatched.rows.filter((r) => isPendingFloridaOfficer(r) && hasCompanyName(r));
     let pending = pendingNull;
-    if (pending.length < opts.limit) {
+    const needErrorRetry =
+      opts.reset_errors === true || pending.length < opts.limit || pendingNull.length === 0;
+    if (needErrorRetry) {
       const all = await fetchContacts(opts.list_id, { limit: 8000, offset: 0, unmatchedOnly: false });
       const retry = all.rows.filter((r) => isPendingFloridaOfficer(r) && hasCompanyName(r));
       const seen = new Set(pending.map((r) => r.lead_id));
@@ -480,13 +489,15 @@ export async function matchFloridaOfficers(opts: {
   limit?: number;
   offset?: number;
   only_unmatched?: boolean;
+  reset_errors?: boolean;
 }): Promise<Record<string, unknown>> {
   await loadAppSettings();
   if (!hasFloridaSunbiz()) {
     return { ok: false, error: 'Florida officer source is unavailable.' };
   }
+  const prepared = await prepareFloridaSunbizRun();
   const onlyUnmatched = opts.only_unmatched !== false;
-  const limit = opts.limit ?? (hasFloridaSosKey() ? OFFICER_DEFAULT_LIMIT : FLORIDA_OFFICER_DEFAULT_LIMIT);
+  const limit = opts.limit ?? (prepared.api_usable ? OFFICER_DEFAULT_LIMIT : FLORIDA_OFFICER_DEFAULT_LIMIT);
   let fetched: FetchContactsResult;
   let targets: EnrichmentRow[];
   let remainingHint: number;
@@ -496,6 +507,7 @@ export async function matchFloridaOfficers(opts: {
       limit,
       offset: opts.offset ?? 0,
       only_unmatched: onlyUnmatched,
+      reset_errors: opts.reset_errors === true,
     });
     fetched = page.fetched;
     targets = page.targets;
@@ -516,6 +528,14 @@ export async function matchFloridaOfficers(opts: {
     if (Date.now() > deadline) {
       timedOut = true;
       break;
+    }
+    const retryPoisoned =
+      row.officer_match === 'error' ||
+      opts.reset_errors === true ||
+      looksLikeFloridaTransportEvidence(row.evidence);
+    if (retryPoisoned) {
+      row.officer_match = null;
+      row.evidence = null;
     }
     try {
       const hits = await searchSunbizEntities(row.company_name || '');
@@ -563,26 +583,27 @@ export async function matchFloridaOfficers(opts: {
       await sleep(floridaOfficerGapMs());
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'officer lookup failed';
-      if (err instanceof FloridaSunbizError && err.blocked && processed.length === 0) {
+      if (
+        err instanceof FloridaSunbizError &&
+        processed.length === 0 &&
+        (err.blocked || err.authFailure)
+      ) {
+        const status = floridaSunbizKeyStatus();
         return {
           ok: false,
-          blocked: true,
+          blocked: err.blocked,
+          key_status: status,
           error: msg,
           ...supabaseTargetMeta(),
           processed: 0,
           remaining_unmatched: remainingHint + targets.length,
           assistant_instructions:
-            'Florida Sunbiz blocked this host (Cloudflare). Leave rows unmatched. Cayden can paste a free Sunbiz Daily API key with set_enrichment_api_key(key=florida_sos_api_key, confirm=true). sunbizdata.com keys start with sb_. Do not buy bulk SOS. Then re-run match_florida_officers(only_unmatched=true).',
+            status === 'malformed'
+              ? 'florida_sos_api_key is malformed (often a pasted curl). Public Sunbiz HTML was also blocked. Leave rows unmatched. Fix the Railway variable or set_enrichment_api_key with an sb_ / Sunbiz Daily token, then re-run match_florida_officers(only_unmatched=true). Do not stamp officer_match=error.'
+              : 'Florida Sunbiz blocked this host (Cloudflare) and the keyed API was unusable. Leave rows unmatched — nothing was written. Fix florida_sos_api_key or wait for HTML access, then re-run match_florida_officers(only_unmatched=true). Previously stamped officer_match=error rows are retried by that filter.',
         };
       }
-      const permanent = err instanceof FloridaSunbizError ? err.permanent : /Sunbiz \w+ 400\b/.test(msg);
-      appendEvidence(row, msg);
-      if (permanent) {
-        row.officer_match = 'error';
-        applyDial(row);
-        processed.push(row);
-        await persistRows([row], { writeOfficerMatch: true });
-      }
+      // Transport/auth failures are not a per-row verdict. Leave unmatched (null) so only_unmatched retries.
       errors += 1;
     }
   }
@@ -593,6 +614,7 @@ export async function matchFloridaOfficers(opts: {
     ok: true,
     ...supabaseTargetMeta(),
     source: 'florida_sunbiz',
+    key_status: floridaSunbizKeyStatus(),
     processed: processed.length,
     attempted: targets.length,
     matched,
@@ -606,11 +628,17 @@ export async function matchFloridaOfficers(opts: {
     remaining_unmatched: remaining,
     has_more: remaining > 0,
     next_offset: onlyUnmatched ? null : fetched.offset + processed.length,
-    resume_with: onlyUnmatched ? { only_unmatched: true, limit } : { offset: fetched.offset + processed.length, limit },
+    resume_with: onlyUnmatched
+      ? {
+          only_unmatched: true,
+          limit,
+          ...(opts.reset_errors === true ? { reset_errors: true } : {}),
+        }
+      : { offset: fetched.offset + processed.length, limit },
     by_officer_match: { match: matched, different, none, agent, errors },
     sample: sample(processed),
     assistant_instructions: remaining
-      ? `Processed ${processed.length}; ${remaining} Florida rows still unmatched. Re-run match_florida_officers(only_unmatched=true, limit=${limit}). Do not pass next_offset while only_unmatched=true. officer_match=agent is registered-agent-only (not an owner). Non-Florida rows are skipped (left unmatched for match_texas_officers). Do not dump the list.`
+      ? `Processed ${processed.length}; ${remaining} Florida rows still unmatched. Re-run match_florida_officers(only_unmatched=true, limit=${limit}). officer_match=error is retryable. Do not pass next_offset while only_unmatched=true. officer_match=agent is registered-agent-only (not an owner). Non-Florida rows are skipped (left unmatched for match_texas_officers). Do not dump the list.`
       : 'Florida officer names are public Sunbiz records. Next lookup_line_type — verified mobiles without an officer source become dial_status=mobile_unverified_owner.',
   };
 }

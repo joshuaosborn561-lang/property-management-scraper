@@ -1,4 +1,5 @@
 import { getSetting, loadAppSettings } from './appSettings.js';
+import { formatApiError, inspectFloridaSosKey, isSunbizdataKey } from './floridaSosKey.js';
 import {
   isRegisteredAgentName,
   namesLooselyMatch,
@@ -39,21 +40,36 @@ export interface SunbizEntity {
   source: 'sunbiz' | 'sunbizdaily' | 'sunbizdata';
 }
 
+export type FloridaRunKeyStatus =
+  | 'unused'
+  | 'ok'
+  | 'salvaged'
+  | 'malformed'
+  | 'rejected_falling_back_to_html';
+
 export class FloridaSunbizError extends Error {
   readonly status: number;
   readonly kind: 'search' | 'detail';
   readonly blocked: boolean;
+  readonly authFailure: boolean;
 
-  constructor(kind: 'search' | 'detail', status: number, message: string, blocked = false) {
+  constructor(
+    kind: 'search' | 'detail',
+    status: number,
+    message: string,
+    opts: { blocked?: boolean; authFailure?: boolean } | boolean = {},
+  ) {
     super(message);
     this.name = 'FloridaSunbizError';
     this.kind = kind;
     this.status = status;
-    this.blocked = blocked;
+    const flags = typeof opts === 'boolean' ? { blocked: opts } : opts;
+    this.blocked = Boolean(flags.blocked);
+    this.authFailure = Boolean(flags.authFailure);
   }
 
   get permanent(): boolean {
-    if (this.blocked) return false;
+    if (this.blocked || this.authFailure) return false;
     if (this.status === 429) return false;
     return this.status >= 400 && this.status < 500;
   }
@@ -61,6 +77,9 @@ export class FloridaSunbizError extends Error {
 
 let injectedFetch: FetchLike | null = null;
 let cachedSource: 'html' | 'api' | null = null;
+let htmlBlocked = false;
+let apiRejected = false;
+let runKeyStatus: FloridaRunKeyStatus = 'unused';
 
 export function setFloridaSunbizFetch(fn: FetchLike | null): void {
   injectedFetch = fn;
@@ -68,14 +87,29 @@ export function setFloridaSunbizFetch(fn: FetchLike | null): void {
 
 export function resetFloridaSunbizSource(): void {
   cachedSource = null;
+  htmlBlocked = false;
+  apiRejected = false;
+  runKeyStatus = 'unused';
+}
+
+export function floridaSunbizKeyStatus(): FloridaRunKeyStatus {
+  return runKeyStatus;
+}
+
+export function isRetryableFloridaOfficerMatch(match: string | null | undefined): boolean {
+  return match == null || match === '' || match === 'unavailable' || match === 'error';
 }
 
 function getFetch(): FetchLike {
   return injectedFetch ?? fetch;
 }
 
+export function inspectConfiguredFloridaSosKey() {
+  return inspectFloridaSosKey(getSetting('florida_sos_api_key'));
+}
+
 export function hasFloridaSosKey(): boolean {
-  return Boolean(getSetting('florida_sos_api_key'));
+  return Boolean(inspectConfiguredFloridaSosKey().usable) && !apiRejected;
 }
 
 /** Public Sunbiz HTML is attempted first; a key is only required if Cloudflare blocks this host. */
@@ -393,11 +427,26 @@ async function getSunbizHtml(hit: SunbizSearchHit): Promise<SunbizEntity | null>
 }
 
 function sosKey(): string {
-  return getSetting('florida_sos_api_key');
+  return inspectConfiguredFloridaSosKey().usable;
 }
 
-function isSunbizdataKey(key: string): boolean {
-  return /^sb_/i.test(key);
+function isApiAuthStatus(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+function throwApiError(
+  kind: 'search' | 'detail',
+  provider: 'sunbizdata' | 'Sunbiz Daily',
+  status: number,
+  body: unknown,
+  statusText: string,
+): never {
+  throw new FloridaSunbizError(
+    kind,
+    status,
+    `${provider} ${kind} ${status}: ${formatApiError(body, statusText || String(status))}`,
+    { authFailure: isApiAuthStatus(status) },
+  );
 }
 
 async function readJson(url: string, headers: HeadersInit): Promise<{ res: Response; body: Record<string, unknown> | null }> {
@@ -481,11 +530,7 @@ async function searchSunbizdaily(name: string, key: string): Promise<SunbizSearc
     'User-Agent': 'PermitParcelMCP/2.0',
   });
   if (!res.ok) {
-    throw new FloridaSunbizError(
-      'search',
-      res.status,
-      `Sunbiz Daily search ${res.status}: ${str(body?.detail || body?.error) || res.statusText}`,
-    );
+    throwApiError('search', 'Sunbiz Daily', res.status, body, res.statusText);
   }
   const filings = Array.isArray(body?.filings) ? body.filings : [];
   return filings
@@ -516,11 +561,7 @@ async function getSunbizdaily(hit: SunbizSearchHit, key: string): Promise<Sunbiz
   });
   if (res.status === 404) return null;
   if (!res.ok || !body) {
-    throw new FloridaSunbizError(
-      'detail',
-      res.status,
-      `Sunbiz Daily detail ${res.status}: ${str(body?.detail || body?.error) || res.statusText}`,
-    );
+    throwApiError('detail', 'Sunbiz Daily', res.status, body, res.statusText);
   }
   return entityFromSunbizdaily(body);
 }
@@ -534,11 +575,7 @@ async function searchSunbizdata(name: string, key: string): Promise<SunbizSearch
     'User-Agent': 'PermitParcelMCP/2.0',
   });
   if (!res.ok) {
-    throw new FloridaSunbizError(
-      'search',
-      res.status,
-      `sunbizdata search ${res.status}: ${str(body?.detail || body?.error || body?.message) || res.statusText}`,
-    );
+    throwApiError('search', 'sunbizdata', res.status, body, res.statusText);
   }
   const results = Array.isArray(body?.results) ? body.results : Array.isArray(body?.data) ? body.data : [];
   return results
@@ -569,11 +606,7 @@ async function getSunbizdata(hit: SunbizSearchHit, key: string): Promise<SunbizE
   });
   if (res.status === 404) return null;
   if (!res.ok || !body) {
-    throw new FloridaSunbizError(
-      'detail',
-      res.status,
-      `sunbizdata detail ${res.status}: ${str(body?.detail || body?.error || body?.message) || res.statusText}`,
-    );
+    throwApiError('detail', 'sunbizdata', res.status, body, res.statusText);
   }
   return entityFromSunbizdata(body);
 }
@@ -585,7 +618,7 @@ async function searchViaApi(name: string): Promise<SunbizSearchHit[]> {
       'search',
       403,
       'Florida Sunbiz blocked this host (Cloudflare). Set florida_sos_api_key via set_enrichment_api_key.',
-      true,
+      { blocked: true },
     );
   }
   return isSunbizdataKey(key) ? searchSunbizdata(name, key) : searchSunbizdaily(name, key);
@@ -594,48 +627,144 @@ async function searchViaApi(name: string): Promise<SunbizSearchHit[]> {
 async function getViaApi(hit: SunbizSearchHit): Promise<SunbizEntity | null> {
   const key = sosKey();
   if (!key) {
-    throw new FloridaSunbizError('detail', 403, 'florida_sos_api_key is not set.', true);
+    throw new FloridaSunbizError('detail', 403, 'florida_sos_api_key is not set.', { blocked: true });
   }
   return isSunbizdataKey(key) ? getSunbizdata(hit, key) : getSunbizdaily(hit, key);
+}
+
+function markApiRejected(): void {
+  apiRejected = true;
+  cachedSource = cachedSource === 'api' ? null : cachedSource;
+  if (runKeyStatus === 'ok' || runKeyStatus === 'salvaged' || runKeyStatus === 'unused') {
+    runKeyStatus = 'rejected_falling_back_to_html';
+  }
+}
+
+function bothPathsFailedError(htmlErr: unknown, apiErr?: unknown): FloridaSunbizError {
+  const htmlMsg = htmlErr instanceof Error ? htmlErr.message : 'Florida Sunbiz HTML failed';
+  const apiMsg = apiErr instanceof Error ? apiErr.message : '';
+  const message = apiMsg ? `${htmlMsg} · ${apiMsg}` : htmlMsg;
+  const authFailure = apiErr instanceof FloridaSunbizError && apiErr.authFailure;
+  return new FloridaSunbizError('search', 403, message, { blocked: true, authFailure });
+}
+
+async function searchHtmlRanked(name: string, q: string): Promise<SunbizSearchHit[]> {
+  const hits = await searchSunbizHtml(q);
+  htmlBlocked = false;
+  cachedSource = 'html';
+  return rankSunbizHits(name, hits);
+}
+
+async function searchApiRanked(name: string, q: string): Promise<SunbizSearchHit[]> {
+  const hits = await searchViaApi(q);
+  cachedSource = 'api';
+  return rankSunbizHits(name, hits);
+}
+
+export async function prepareFloridaSunbizRun(): Promise<{
+  key_status: FloridaRunKeyStatus;
+  api_usable: boolean;
+}> {
+  resetFloridaSunbizSource();
+  await loadAppSettings();
+  const info = inspectConfiguredFloridaSosKey();
+  if (info.status === 'missing') {
+    runKeyStatus = 'unused';
+    return { key_status: 'unused', api_usable: false };
+  }
+  if (info.status === 'malformed') {
+    runKeyStatus = 'malformed';
+    apiRejected = true;
+    return { key_status: 'malformed', api_usable: false };
+  }
+  runKeyStatus = info.status === 'salvaged' ? 'salvaged' : 'ok';
+  try {
+    await searchViaApi('TAMPA');
+  } catch (err) {
+    if (err instanceof FloridaSunbizError && err.authFailure) {
+      markApiRejected();
+      return { key_status: runKeyStatus, api_usable: false };
+    }
+    // Non-auth probe failures still allow API as a Cloudflare fallback during the row loop.
+  }
+  return { key_status: runKeyStatus, api_usable: Boolean(sosKey()) && !apiRejected };
 }
 
 export async function searchSunbizEntities(name: string): Promise<SunbizSearchHit[]> {
   await loadAppSettings();
   const q = cleanSearchTerm(name);
   if (q.length < 2) return [];
-  if (cachedSource === 'api') return rankSunbizHits(name, await searchViaApi(q));
-  if (cachedSource === 'html') return rankSunbizHits(name, await searchSunbizHtml(q));
-  try {
-    const hits = await searchSunbizHtml(q);
-    cachedSource = 'html';
-    return rankSunbizHits(name, hits);
-  } catch (err) {
-    if (err instanceof FloridaSunbizError && err.blocked) {
-      if (!sosKey()) throw err;
-      cachedSource = 'api';
-      return rankSunbizHits(name, await searchViaApi(q));
+
+  let htmlErr: unknown = null;
+  if (cachedSource !== 'api' && !htmlBlocked) {
+    try {
+      return await searchHtmlRanked(name, q);
+    } catch (err) {
+      if (!(err instanceof FloridaSunbizError && err.blocked)) throw err;
+      htmlBlocked = true;
+      htmlErr = err;
     }
-    throw err;
   }
+
+  if (sosKey() && !apiRejected) {
+    try {
+      return await searchApiRanked(name, q);
+    } catch (err) {
+      if (err instanceof FloridaSunbizError && err.authFailure) {
+        markApiRejected();
+        try {
+          return await searchHtmlRanked(name, q);
+        } catch (fallbackErr) {
+          if (fallbackErr instanceof FloridaSunbizError && fallbackErr.blocked) {
+            htmlBlocked = true;
+            throw bothPathsFailedError(fallbackErr, err);
+          }
+          throw fallbackErr;
+        }
+      }
+      throw err;
+    }
+  }
+
+  if (htmlErr) throw htmlErr instanceof FloridaSunbizError ? htmlErr : bothPathsFailedError(htmlErr);
+  return searchHtmlRanked(name, q);
 }
 
 export async function getSunbizEntity(hit: SunbizSearchHit): Promise<SunbizEntity | null> {
   await loadAppSettings();
-  if (cachedSource === 'api') return getViaApi(hit);
+  if (cachedSource === 'api' && sosKey() && !apiRejected) {
+    try {
+      return await getViaApi(hit);
+    } catch (err) {
+      if (err instanceof FloridaSunbizError && err.authFailure) {
+        markApiRejected();
+        return getSunbizHtml(hit);
+      }
+      throw err;
+    }
+  }
   try {
     const entity = await getSunbizHtml(hit);
     cachedSource = cachedSource ?? 'html';
     return entity;
   } catch (err) {
     if (err instanceof FloridaSunbizError && err.blocked) {
-      if (!sosKey()) throw err;
-      cachedSource = 'api';
-      return getViaApi(hit);
+      htmlBlocked = true;
+      if (!sosKey() || apiRejected) throw err;
+      try {
+        cachedSource = 'api';
+        return await getViaApi(hit);
+      } catch (apiErr) {
+        if (apiErr instanceof FloridaSunbizError && apiErr.authFailure) {
+          markApiRejected();
+        }
+        throw apiErr;
+      }
     }
     throw err;
   }
 }
 
 export function floridaOfficerGapMs(): number {
-  return cachedSource === 'api' ? 20 : HTML_GAP_MS;
+  return cachedSource === 'api' && !apiRejected ? 20 : HTML_GAP_MS;
 }

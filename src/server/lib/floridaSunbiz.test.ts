@@ -4,12 +4,15 @@ import { clearAppSetting, setAppSetting } from './appSettings.js';
 import {
   FloridaSunbizError,
   expandOfficerTitle,
+  floridaSunbizKeyStatus,
   getSunbizEntity,
+  isRetryableFloridaOfficerMatch,
   looksLikeCloudflareChallenge,
   normalizeSunbizPersonName,
   parseDetailHtml,
   parseSearchResultsHtml,
   pickSunbizOwnerOfficer,
+  prepareFloridaSunbizRun,
   rankSunbizHits,
   resetFloridaSunbizSource,
   searchSunbizEntities,
@@ -232,5 +235,111 @@ describe('searchSunbizEntities fetch', { concurrency: false }, () => {
     });
     assert.equal(entity?.source, 'sunbizdaily');
     assert.equal(entity?.document_number, 'P97000071529');
+  });
+
+  it('uses public HTML first even when a keyed API would 401', async () => {
+    await setAppSetting({
+      key: 'florida_sos_api_key',
+      api_key: 'sb_bad_test_key_xx',
+      persist: false,
+      set_by: 'test',
+    });
+    let apiCalls = 0;
+    setFloridaSunbizFetch(async (input) => {
+      const url = String(input);
+      if (url.includes('sunbizdata.com') || url.includes('sunbizdaily.com')) {
+        apiCalls += 1;
+        return new Response(JSON.stringify({ error: { code: 401 } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(SEARCH_HTML, { status: 200, headers: { 'content-type': 'text/html' } });
+    });
+    const hits = await searchSunbizEntities('TAMPA ROOFING COMPANY');
+    assert.equal(hits[0]?.document_number, '302224');
+    assert.equal(apiCalls, 0);
+  });
+
+  it('falls back to public HTML when the keyed API returns 401', async () => {
+    await setAppSetting({
+      key: 'florida_sos_api_key',
+      api_key: 'sb_bad_test_key_xx',
+      persist: false,
+      set_by: 'test',
+    });
+    let htmlCalls = 0;
+    setFloridaSunbizFetch(async (input) => {
+      const url = String(input);
+      if (url.includes('search.sunbiz.org')) {
+        htmlCalls += 1;
+        if (htmlCalls === 1) return new Response('Just a moment', { status: 403 });
+        return new Response(SEARCH_HTML, { status: 200, headers: { 'content-type': 'text/html' } });
+      }
+      return new Response(JSON.stringify({ error: { code: 401, message: 'invalid key' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const hits = await searchSunbizEntities('TAMPA ROOFING COMPANY');
+    assert.equal(hits[0]?.document_number, '302224');
+    assert.equal(floridaSunbizKeyStatus(), 'rejected_falling_back_to_html');
+    assert.ok(htmlCalls >= 2);
+  });
+
+  it('does not stringify keyed 401 bodies as [object Object]', async () => {
+    await setAppSetting({
+      key: 'florida_sos_api_key',
+      api_key: 'sb_bad_test_key_xx',
+      persist: false,
+      set_by: 'test',
+    });
+    setFloridaSunbizFetch(async (input) => {
+      const url = String(input);
+      if (url.includes('search.sunbiz.org')) {
+        return new Response('Just a moment', { status: 403 });
+      }
+      return new Response(JSON.stringify({ error: { code: 401, message: 'invalid key' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    await assert.rejects(
+      () => searchSunbizEntities('TAMPA ROOFING COMPANY'),
+      (err: unknown) => {
+        assert.ok(err instanceof FloridaSunbizError);
+        assert.equal(err.message.includes('[object Object]'), false);
+        assert.match(err.message, /invalid key|401/);
+        return true;
+      },
+    );
+  });
+
+  it('prepareFloridaSunbizRun marks a 401 key as rejected before any row work', async () => {
+    await setAppSetting({
+      key: 'florida_sos_api_key',
+      api_key: 'sb_bad_test_key_xx',
+      persist: false,
+      set_by: 'test',
+    });
+    setFloridaSunbizFetch(async () => {
+      return new Response(JSON.stringify({ error: { code: 401, message: 'invalid key' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const prepared = await prepareFloridaSunbizRun();
+    assert.equal(prepared.api_usable, false);
+    assert.equal(prepared.key_status, 'rejected_falling_back_to_html');
+  });
+});
+
+describe('isRetryableFloridaOfficerMatch', () => {
+  it('retries error and unavailable so a bad key cannot poison the queue', () => {
+    assert.equal(isRetryableFloridaOfficerMatch(null), true);
+    assert.equal(isRetryableFloridaOfficerMatch('error'), true);
+    assert.equal(isRetryableFloridaOfficerMatch('unavailable'), true);
+    assert.equal(isRetryableFloridaOfficerMatch('none'), false);
+    assert.equal(isRetryableFloridaOfficerMatch('match'), false);
   });
 });

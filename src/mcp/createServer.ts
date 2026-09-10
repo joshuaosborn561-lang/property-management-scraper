@@ -1058,7 +1058,7 @@ WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s s
     {
       title: 'Match Florida Sunbiz officers (public records)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for Florida companies on a calling list. Equivalent to match_texas_officers but against search.sunbiz.org.
-WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Default limit 40 (HTML is slower / polite to Sunbiz; 80 if florida_sos_api_key is set). only_unmatched=true skips match/none/different/agent/error so re-runs advance — do not use next_offset while that filter is on. Rows Texas already marked unavailable are retried. Non-Florida rows are skipped (left unmatched). officer_match=agent means registered agent only (not the owner). If this host is Cloudflare-blocked, the call returns ok=false without writing rows; paste a free Sunbiz Daily key with set_enrichment_api_key(key=florida_sos_api_key).`,
+WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Public HTML is tried first. Default limit 40 (80 only if a usable keyed API is available). only_unmatched=true skips match/none/different/agent so re-runs advance — officer_match=error and Texas-stamped unavailable Florida rows ARE retried (a bad key previously stamped error; do not require only_unmatched=false). Non-Florida rows are skipped (left unmatched). officer_match=agent is registered agent only (not the owner). If this host is Cloudflare-blocked AND the keyed API 401/403s, the call returns ok=false without writing rows. A rejected key falls back to public HTML (key_status=rejected_falling_back_to_html) instead of stamping every row error. Malformed keys (pasted curl) report configured=false reason=malformed.`,
       inputSchema: {
         list_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional().describe('Default 40 without a key, 80 with florida_sos_api_key. One call should finish within the 48s budget.'),
@@ -1066,7 +1066,11 @@ WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Default limit
         only_unmatched: z
           .boolean()
           .optional()
-          .describe('Default true. Rows already matched/none/error are skipped. Texas-stamped unavailable Florida rows are retried.'),
+          .describe('Default true. Rows already match/none/different/agent are skipped. officer_match=error and Texas-stamped unavailable Florida rows are retried.'),
+        reset_errors: z
+          .boolean()
+          .optional()
+          .describe('Optional. Also pull officer_match=error rows even when other unmatched Florida rows remain. Default only_unmatched already retries error on lists that have no null unmatched rows left.'),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
@@ -1344,7 +1348,7 @@ Request: "${request || 'Show Cayden calling lists with phone numbers'}"
 Request: "${request || 'Get Cayden owner cells on his latest list'}"
 1) enrichment_keys_status — if Veriphone or Texas CPA missing, have Cayden paste via set_enrichment_api_key. Never echo keys.
 2) list_calling_lists(owner=cayden) then score_calling_list(only_unscored=true) until remaining_unscored=0
-3) match_texas_officers(only_unmatched=true, limit=80) until remaining_unmatched=0 for Texas lists. For Florida lists use match_florida_officers(only_unmatched=true, limit=40) instead. Re-run with the same only_unmatched filter (offset is unused). Sole-prop CPA 400s are officer_match=none; other permanent 400s are officer_match=error. officer_match=agent is registered-agent-only (not an owner). Florida Cloudflare blocks: set florida_sos_api_key, do not stamp error on the whole list.
+3) match_texas_officers(only_unmatched=true, limit=80) until remaining_unmatched=0 for Texas lists. For Florida lists use match_florida_officers(only_unmatched=true, limit=40) instead. Re-run with the same only_unmatched filter (offset is unused). Sole-prop CPA 400s are officer_match=none; other permanent 400s are officer_match=error. officer_match=agent is registered-agent-only (not an owner). Florida: a bad SOS key must fall back to public HTML or return ok=false with zero writes — never stamp officer_match=error. Previously stamped error rows are retried by only_unmatched=true.
 4) lookup_line_type without confirm (show $), then confirm=true; re-run only_unknown until remaining_unknown=0. Omit offset. match+mobile → dial_status=owner_cell.
 5) owner_people_search for needs_enrichment. Open people-search URLs. record_owner_cell for wireless + matching address only.
 6) query_calling_list(dial_status=owner_cell). Do not dump the list. Non-DFW markets: shovels_pull_calling_list(confirm=true). CSV import only if they already have a file.`,

@@ -145,13 +145,15 @@ callingListsRouter.post('/officers', async (req, res) => {
     const source = String(req.body?.source ?? req.body?.state ?? '').trim().toUpperCase();
     const florida =
       source === 'FL' || source === 'FLORIDA' || source === 'SUNBIZ' || source === 'FLORIDA_SUNBIZ';
-    const fn = florida ? matchFloridaOfficers : matchTexasOfficers;
-    const result = await fn({
+    const shared = {
       list_id: String(req.body?.list_id ?? ''),
       limit: req.body?.limit ? Number(req.body.limit) : undefined,
       offset: req.body?.offset != null ? Number(req.body.offset) : undefined,
       only_unmatched: req.body?.only_unmatched,
-    });
+    };
+    const result = florida
+      ? await matchFloridaOfficers({ ...shared, reset_errors: req.body?.reset_errors === true })
+      : await matchTexasOfficers(shared);
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'officer match failed' });
@@ -165,6 +167,7 @@ callingListsRouter.post('/florida-officers', async (req, res) => {
       limit: req.body?.limit ? Number(req.body.limit) : undefined,
       offset: req.body?.offset != null ? Number(req.body.offset) : undefined,
       only_unmatched: req.body?.only_unmatched,
+      reset_errors: req.body?.reset_errors === true,
     });
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {

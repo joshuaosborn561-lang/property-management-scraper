@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { inspectFloridaSosKey } from './floridaSosKey.js';
 import { getSupabase, hasSupabase, ingestSecret } from './supabase.js';
 
 export const SETTING_KEYS = [
@@ -99,8 +100,26 @@ export function getSetting(key: SettingKey): string {
 }
 
 export function settingStatus(key: SettingKey) {
-  const value = getSetting(key);
   const slot = slots[key];
+  if (key === 'florida_sos_api_key') {
+    const raw = (slot.value || envFallback[key] || '').trim();
+    const info = inspectFloridaSosKey(raw);
+    const envInfo = inspectFloridaSosKey(envFallback[key]);
+    const display = info.status === 'malformed' ? raw : info.usable || raw;
+    return {
+      key,
+      configured: Boolean(info.usable),
+      source: (info.usable || info.status === 'malformed') ? slot.source : 'none',
+      masked: display ? maskKey(display) : null,
+      updated_by: slot.updated_by,
+      updated_at: slot.updated_at,
+      env_fallback: Boolean(envInfo.usable),
+      persist_available: hasSupabase(),
+      reason: info.reason,
+      salvaged: info.salvaged,
+    };
+  }
+  const value = getSetting(key);
   return {
     key,
     configured: Boolean(value),
@@ -128,7 +147,7 @@ export async function enrichmentKeysStatus() {
     texas_cpa_api_key: settingStatus('texas_cpa_api_key'),
     florida_sos_api_key: settingStatus('florida_sos_api_key'),
     assistant_instructions:
-      'Show only masked fingerprints. Never echo full keys. Cayden sets missing ones with set_enrichment_api_key. florida_sos_api_key is optional — public Sunbiz HTML is tried first; a Sunbiz Daily (free) or sunbizdata (sb_) key is only needed if Cloudflare blocks this host.',
+      'Show only masked fingerprints. Never echo full keys. Cayden sets missing ones with set_enrichment_api_key. florida_sos_api_key is optional — public Sunbiz HTML is tried first; a Sunbiz Daily (free) or sunbizdata (sb_) key is only needed if Cloudflare blocks this host. A pasted curl is configured=false reason=malformed, not a working key.',
   };
 }
 
@@ -162,8 +181,24 @@ export async function setAppSetting(opts: {
   if (!isSettingKey(opts.key)) {
     return { ok: false, error: `Unknown setting. Use: permitstack_api_key, ${SETTING_KEYS.join(', ')}` };
   }
-  const value = opts.api_key.trim();
   const by = (opts.set_by || 'cayden').trim().toLowerCase() || 'cayden';
+  let value = opts.api_key.trim();
+  let salvaged = false;
+  if (opts.key === 'florida_sos_api_key') {
+    const info = inspectFloridaSosKey(value);
+    if (info.status === 'malformed' || info.status === 'missing') {
+      return {
+        ok: false,
+        error:
+          'florida_sos_api_key is malformed — paste an sb_ sunbizdata key or a Sunbiz Daily X-API-Key, not a curl command.',
+        reason: 'malformed',
+      };
+    }
+    if (info.status === 'salvaged') {
+      value = info.usable;
+      salvaged = true;
+    }
+  }
   if (value.length < 8) return { ok: false, error: 'API key looks too short' };
   slots[opts.key] = {
     value,
@@ -176,6 +211,7 @@ export async function setAppSetting(opts: {
   return {
     ok: true,
     ...settingStatus(opts.key),
+    salvaged,
     persisted: opts.persist !== false && !persistError,
     persist_error: persistError,
     assistant_instructions:

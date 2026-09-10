@@ -932,20 +932,17 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
     {
       title: 'Set Veriphone, Texas Comptroller, or Florida Sunbiz API key',
       description: `WHEN TO USE: Cayden pastes a Veriphone, Texas CPA, or optional Florida Sunbiz API key from Claude.
-RULES: confirm=true. Never echo the full key. key is veriphone_api_key, texas_cpa_api_key, florida_sos_api_key (or shovels_api_key). florida_sos_api_key is only needed if public Sunbiz HTML is Cloudflare-blocked.`,
+RULES: confirm=true. Never echo the full key. key is veriphone_api_key, texas_cpa_api_key, florida_sos_api_key, or shovels_api_key (alias permitstack_api_key). florida_sos_api_key is only needed if public Sunbiz HTML is Cloudflare-blocked. If persist fails (unknown setting), the key is NOT saved — apply the 20260910 SQL migration.`,
       inputSchema: {
         key: z
           .enum([
             'veriphone_api_key',
             'texas_cpa_api_key',
             'florida_sos_api_key',
-            'sunbiz_api_key',
-            'sunbizdaily_api_key',
-            'sunbizdata_api_key',
             'shovels_api_key',
             'permitstack_api_key',
           ])
-          .describe('Which key to set'),
+          .describe('Which key to set. Stored as SETTING_KEYS (permitstack_api_key → shovels_api_key).'),
         api_key: z.string().min(1).describe('The secret. Do not echo this back.'),
         confirm: z.boolean().describe('Must be true'),
         set_by: z.string().optional(),
@@ -982,7 +979,6 @@ RULES: confirm=true. Never echo the full key. key is veriphone_api_key, texas_cp
           'veriphone_api_key',
           'texas_cpa_api_key',
           'florida_sos_api_key',
-          'sunbiz_api_key',
           'shovels_api_key',
           'permitstack_api_key',
         ]),

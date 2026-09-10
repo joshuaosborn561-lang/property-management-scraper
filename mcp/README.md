@@ -12,7 +12,7 @@ Remote MCP: `https://workspace-production-4702.up.railway.app/mcp` (authless Str
 - `permitstack_pull_calling_list` / `shovels_pull_calling_list` — live pull → Supabase calling list
 - `permits_contractors_summary|query|sample|get|export_csv`
 - `save_calling_list` / `list_calling_lists` / `query_calling_list` / `import_calling_list_csv` — persist + filter for Cayden (`dial_status=owner_cell`); CSV for non-DFW
-- `score_calling_list` / `match_texas_officers` / `lookup_line_type` / `owner_people_search` / `record_owner_cell` — owner-cell enrichment (resume via only_unscored / only_unmatched)
+- `score_calling_list` / `match_texas_officers` / `match_florida_officers` / `lookup_line_type` / `owner_people_search` / `record_owner_cell` — owner-cell enrichment (resume via only_unscored / only_unmatched)
 - `parcels_summary|query|sample|export_csv`
 - `build_operators`
 - `sync_to_supabase`

@@ -65,14 +65,14 @@ The live PermitStack key is already configured on the server (\`PERMITSTACK_API_
 Goal: dial **owner cells**, not office/main/license lines.
 1. \`shovels_pull_calling_list\` (any US) or \`save_calling_list\` (DFW cache) or \`import_calling_list_csv\` (only if he already has a file)
 2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
-3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\` — Texas entities only; skip for out-of-state lists or note it is TX Comptroller.
+3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\` — Texas entities only. Florida lists: \`match_florida_officers(only_unmatched=true, limit=40)\` (public Sunbiz; optional \`florida_sos_api_key\` if Cloudflare blocks).
 4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
 5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match+mobile**. Verified mobiles with no officer source (out-of-state) are \`mobile_unverified_owner\`. Leftovers (\`agent\` / \`different\`): \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
-6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells. \`officer_match\` is null until \`match_texas_officers\` runs — never seeded as \`none\`.
+6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells. \`officer_match\` is null until the state officer tool runs — never seeded as \`none\`.
 
 Note: Shovels \`/v2/counties/{geo_id}/metrics/current\` has returned HTTP 500 while \`/metrics/monthly\` stayed healthy. Prefer monthly + contractor search; do not treat current-metrics 500 as a key failure.
 
-Keys: \`set_enrichment_api_key\` for \`veriphone_api_key\` and \`texas_cpa_api_key\`. Never echo them.
+Keys: \`set_enrichment_api_key\` for \`veriphone_api_key\`, \`texas_cpa_api_key\`, and optional \`florida_sos_api_key\`. Never echo them.
 
 ## PermitStack requests (always estimate when asked)
 Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`permitstack_pull_calling_list\` without confirm). Quote \`credits.estimated_requests\` — 1 HTTP request per search page. Cached list tools still cost 0. Do not ask anyone to rotate the PermitStack key.
@@ -105,6 +105,7 @@ Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`
 | query_calling_list | No | Filter a saved list (phone/city/dial_status/permit band) |
 | score_calling_list | No | Free owner vs office score (resume via only_unscored) |
 | match_texas_officers | No | Comptroller PIR officers (TX entities) |
+| match_florida_officers | No | Sunbiz officers (FL entities; optional key if Cloudflare blocks) |
 | lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
 | owner_people_search | No | Google / people-search URLs |
 | record_owner_cell | No | Save a confirmed wireless |
@@ -142,7 +143,7 @@ Estimate with \`permitstack_estimate_credits\` (any geos). Pull with \`permitsta
 \`build_operators\` groups by normalised mailing address (strip C/O, ATTN, %, CARE OF). Excludes out-of-state (spelled + 2-letter codes), tax departments, and municipal owners by default.
 
 ## Free PIR path
-Do not buy paid SOS unmasking for bulk LLCs. Use Texas Comptroller Public Information Reports after operator rollup (Texas entities). Registered agent ≠ owner.
+Do not buy paid SOS unmasking for bulk LLCs. Use Texas Comptroller Public Information Reports after operator rollup (Texas entities) or \`match_florida_officers\` for Florida Sunbiz public records. Registered agent ≠ owner.
 `;
 
 export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP

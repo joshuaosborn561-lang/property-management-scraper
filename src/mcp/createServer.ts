@@ -21,6 +21,7 @@ import {
 import { importCallingListCsv } from '../server/services/importCallingList.js';
 import {
   lookupLineTypes,
+  matchFloridaOfficers,
   matchTexasOfficers,
   ownerPeopleSearch,
   recordOwnerCell,
@@ -119,7 +120,7 @@ async function healthPayload() {
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Live: permitstack_pull / shovels_pull into the contractor store (then permits_contractors_query). DFW cache still free via save_calling_list. Enrich: score → match_texas_officers → lookup_line_type → owner_people_search. Never echo API keys.',
+      'Live: permitstack_pull / shovels_pull into the contractor store (then permits_contractors_query). DFW cache still free via save_calling_list. Enrich: score → match_texas_officers or match_florida_officers → lookup_line_type → owner_people_search. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -919,7 +920,7 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
     'enrichment_keys_status',
     {
       title: 'Enrichment API keys — status (masked)',
-      description: `WHEN TO USE: Before officer match or line-type lookup. Shows whether Veriphone + Texas Comptroller + Shovels keys are set. Never the full keys.`,
+      description: `WHEN TO USE: Before officer match or line-type lookup. Shows whether Veriphone + Texas Comptroller + Florida Sunbiz + Shovels keys are set. Never the full keys.`,
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -929,12 +930,21 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
   server.registerTool(
     'set_enrichment_api_key',
     {
-      title: 'Set Veriphone or Texas Comptroller API key',
-      description: `WHEN TO USE: Cayden pastes a Veriphone or Texas CPA API key from Claude.
-RULES: confirm=true. Never echo the full key. key is veriphone_api_key or texas_cpa_api_key (or shovels_api_key).`,
+      title: 'Set Veriphone, Texas Comptroller, or Florida Sunbiz API key',
+      description: `WHEN TO USE: Cayden pastes a Veriphone, Texas CPA, or optional Florida Sunbiz API key from Claude.
+RULES: confirm=true. Never echo the full key. key is veriphone_api_key, texas_cpa_api_key, florida_sos_api_key (or shovels_api_key). florida_sos_api_key is only needed if public Sunbiz HTML is Cloudflare-blocked.`,
       inputSchema: {
         key: z
-          .enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key', 'permitstack_api_key'])
+          .enum([
+            'veriphone_api_key',
+            'texas_cpa_api_key',
+            'florida_sos_api_key',
+            'sunbiz_api_key',
+            'sunbizdaily_api_key',
+            'sunbizdata_api_key',
+            'shovels_api_key',
+            'permitstack_api_key',
+          ])
           .describe('Which key to set'),
         api_key: z.string().min(1).describe('The secret. Do not echo this back.'),
         confirm: z.boolean().describe('Must be true'),
@@ -966,9 +976,16 @@ RULES: confirm=true. Never echo the full key. key is veriphone_api_key or texas_
     'clear_enrichment_api_key',
     {
       title: 'Clear a Claude-set enrichment API key',
-      description: 'Drops the Claude override for Veriphone / Texas CPA / Shovels. confirm=true.',
+      description: 'Drops the Claude override for Veriphone / Texas CPA / Florida Sunbiz / Shovels. confirm=true.',
       inputSchema: {
-        key: z.enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key', 'permitstack_api_key']),
+        key: z.enum([
+          'veriphone_api_key',
+          'texas_cpa_api_key',
+          'florida_sos_api_key',
+          'sunbiz_api_key',
+          'shovels_api_key',
+          'permitstack_api_key',
+        ]),
         confirm: z.boolean(),
         set_by: z.string().optional(),
       },
@@ -1014,8 +1031,8 @@ WHAT IT DOES: Flags owner-likely vs company-line. $0. Default only_unscored=true
     'match_texas_officers',
     {
       title: 'Match Texas Comptroller officers (free PIR)',
-      description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
-WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/agent/error/unavailable so re-runs advance — do not use next_offset while that filter is on. Never-attempted is officer_match=null (not none). Out-of-state rows are marked unavailable. Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner).`,
+      description: `WHEN TO USE: Confirm the legal owner/manager name for Texas companies on a calling list.
+WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/agent/error/unavailable so re-runs advance — do not use next_offset while that filter is on. Never-attempted is officer_match=null (not none). Out-of-state rows are marked unavailable (Florida rows can still be retried with match_florida_officers). Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner).`,
       inputSchema: {
         list_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional().describe('Default 80. Max 100; one call should finish within the 48s budget.'),
@@ -1032,6 +1049,32 @@ WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s s
         return jsonResult(await matchTexasOfficers(args));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : 'match_texas_officers failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'match_florida_officers',
+    {
+      title: 'Match Florida Sunbiz officers (public records)',
+      description: `WHEN TO USE: Confirm the legal owner/manager name for Florida companies on a calling list. Equivalent to match_texas_officers but against search.sunbiz.org.
+WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Default limit 40 (HTML is slower / polite to Sunbiz; 80 if florida_sos_api_key is set). only_unmatched=true skips match/none/different/agent/error so re-runs advance — do not use next_offset while that filter is on. Rows Texas already marked unavailable are retried. Non-Florida rows are skipped (left unmatched). officer_match=agent means registered agent only (not the owner). If this host is Cloudflare-blocked, the call returns ok=false without writing rows; paste a free Sunbiz Daily key with set_enrichment_api_key(key=florida_sos_api_key).`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        limit: z.number().int().min(1).max(100).optional().describe('Default 40 without a key, 80 with florida_sos_api_key. One call should finish within the 48s budget.'),
+        offset: z.number().int().min(0).optional(),
+        only_unmatched: z
+          .boolean()
+          .optional()
+          .describe('Default true. Rows already matched/none/error are skipped. Texas-stamped unavailable Florida rows are retried.'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await matchFloridaOfficers(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'match_florida_officers failed');
       }
     },
   );
@@ -1301,7 +1344,7 @@ Request: "${request || 'Show Cayden calling lists with phone numbers'}"
 Request: "${request || 'Get Cayden owner cells on his latest list'}"
 1) enrichment_keys_status — if Veriphone or Texas CPA missing, have Cayden paste via set_enrichment_api_key. Never echo keys.
 2) list_calling_lists(owner=cayden) then score_calling_list(only_unscored=true) until remaining_unscored=0
-3) match_texas_officers(only_unmatched=true, limit=80) until remaining_unmatched=0. Re-run with the same only_unmatched filter (offset is unused). Sole-prop CPA 400s are officer_match=none; other permanent 400s are officer_match=error. officer_match=agent is registered-agent-only (not an owner).
+3) match_texas_officers(only_unmatched=true, limit=80) until remaining_unmatched=0 for Texas lists. For Florida lists use match_florida_officers(only_unmatched=true, limit=40) instead. Re-run with the same only_unmatched filter (offset is unused). Sole-prop CPA 400s are officer_match=none; other permanent 400s are officer_match=error. officer_match=agent is registered-agent-only (not an owner). Florida Cloudflare blocks: set florida_sos_api_key, do not stamp error on the whole list.
 4) lookup_line_type without confirm (show $), then confirm=true; re-run only_unknown until remaining_unknown=0. Omit offset. match+mobile → dial_status=owner_cell.
 5) owner_people_search for needs_enrichment. Open people-search URLs. record_owner_cell for wireless + matching address only.
 6) query_calling_list(dial_status=owner_cell). Do not dump the list. Non-DFW markets: shovels_pull_calling_list(confirm=true). CSV import only if they already have a file.`,

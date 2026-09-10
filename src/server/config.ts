@@ -26,6 +26,7 @@ export const config = {
   shovelsBaseUrl: env('PERMITSTACK_BASE_URL', 'https://api.permit-stack.com'),
   veriphoneApiKey: env('VERIPHONE_API_KEY'),
   texasCpaApiKey: env('TEXAS_CPA_API_KEY'),
+  floridaSosApiKey: env('FLORIDA_SOS_API_KEY'),
 };
 
 export type AppConfig = typeof config;

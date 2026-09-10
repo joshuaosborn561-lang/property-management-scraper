@@ -36,9 +36,10 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `list_calling_lists` / `query_calling_list` | Find and filter saved lists (`exclude_national_chains`, `dial_status=owner_cell`) |
 | `score_calling_list` | Free owner vs office score (`only_unscored`, offset, up to 8k) |
 | `match_texas_officers` | Texas Comptroller PIR officers (`only_unmatched`, limit 50, resume) |
+| `match_florida_officers` | Florida Sunbiz officers (`only_unmatched`, public HTML; optional `florida_sos_api_key`) |
 | `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
 | `owner_people_search` / `record_owner_cell` | Google + free people-search leftovers |
-| `set_enrichment_api_key` | Cayden pastes Veriphone / Texas CPA keys |
+| `set_enrichment_api_key` | Cayden pastes Veriphone / Texas CPA / optional Florida Sunbiz keys |
 | `parcels_*` | CAD parcel summary/query/sample/export |
 | `build_operators` | Mailing-address operator rollup → `permit_parcel.operators` (counts only) |
 | `sync_to_supabase` | Full matching-set S2S sync — **counts only**; contractor syncs also catalog a calling list |
@@ -58,7 +59,7 @@ Set `PERMITSTACK_API_KEY` on Railway, or have Cayden paste it with `permitstack_
 1. Optional: `shovels_set_api_key` if he wants to use his own Shovels key
 2. Estimate (optional): `shovels_estimate_credits` with place/city/`has_phone`
 3. Save: `save_calling_list` with `owner=cayden` and `exclude_national_chains=true` (keeps local GCs of any permit volume). Non-DFW: `import_calling_list_csv`.
-4. `score_calling_list(only_unscored=true)` until `remaining_unscored=0` → `match_texas_officers(only_unmatched=true, limit=50)` until `remaining_unmatched=0` → `lookup_line_type` (confirm $ first)
+4. `score_calling_list(only_unscored=true)` until `remaining_unscored=0` → `match_texas_officers` (TX) or `match_florida_officers` (FL) until `remaining_unmatched=0` → `lookup_line_type` (confirm $ first)
 5. Leftovers: `owner_people_search` then `record_owner_cell` for wireless hits
 6. Dial: `query_calling_list(owner=cayden, exclude_national_chains=true, dial_status=owner_cell)`
 
@@ -79,7 +80,7 @@ Do **not** bulk-buy paid SOS products for tens of thousands of LLCs. Cheapest pa
 
 1. Filter by `min_assessed_value`
 2. `build_operators` — resolve mailing-address operators, not every shell entity
-3. Join Texas Comptroller **Public Information Report** (Form 05-102) bulk files (Open Data Portal / Open Records) — free
+3. Join Texas Comptroller **Public Information Report** (Form 05-102) bulk files (Open Data Portal / Open Records) — free. Florida: `match_florida_officers` against public Sunbiz (optional Sunbiz Daily key only if Cloudflare blocks the host).
 
 Registered agents (CT Corporation, law firms) are **not** owners — prefer PIR officer/director fields.
 
@@ -101,6 +102,7 @@ SUPABASE_INGEST_SECRET=
 SHOVELS_API_KEY=   # optional fallback; Cayden can set the live key from Claude
 VERIPHONE_API_KEY= # or paste via set_enrichment_api_key
 TEXAS_CPA_API_KEY= # Comptroller public API; or paste via Claude
+FLORIDA_SOS_API_KEY= # optional; Sunbiz Daily (free) or sunbizdata sb_ key if Cloudflare blocks public HTML
 ```
 
 ## Run

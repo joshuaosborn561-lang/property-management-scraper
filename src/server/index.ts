@@ -130,7 +130,7 @@ app.listen(config.port, () => {
   void loadAppSettings().then(() =>
     enrichmentKeysStatus().then((keys) => {
       console.log(
-        `Keys: permitstack=${keys.shovels_api_key.configured ? keys.shovels_api_key.masked : 'unset'} veriphone=${keys.veriphone_api_key.configured ? keys.veriphone_api_key.masked : 'unset'} cpa=${keys.texas_cpa_api_key.configured ? keys.texas_cpa_api_key.masked : 'unset'}`,
+        `Keys: permitstack=${keys.shovels_api_key.configured ? keys.shovels_api_key.masked : 'unset'} veriphone=${keys.veriphone_api_key.configured ? keys.veriphone_api_key.masked : 'unset'} cpa=${keys.texas_cpa_api_key.configured ? keys.texas_cpa_api_key.masked : 'unset'} fl=${keys.florida_sos_api_key.configured ? keys.florida_sos_api_key.masked : 'unset'}`,
       );
     }),
   );

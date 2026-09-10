@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { listCallingLists, queryCallingList, saveCallingList } from '../services/callingLists.js';
 import {
   lookupLineTypes,
+  matchFloridaOfficers,
   matchTexasOfficers,
   ownerPeopleSearch,
   recordOwnerCell,
@@ -141,7 +142,11 @@ callingListsRouter.post('/score', async (req, res) => {
 
 callingListsRouter.post('/officers', async (req, res) => {
   try {
-    const result = await matchTexasOfficers({
+    const source = String(req.body?.source ?? req.body?.state ?? '').trim().toUpperCase();
+    const florida =
+      source === 'FL' || source === 'FLORIDA' || source === 'SUNBIZ' || source === 'FLORIDA_SUNBIZ';
+    const fn = florida ? matchFloridaOfficers : matchTexasOfficers;
+    const result = await fn({
       list_id: String(req.body?.list_id ?? ''),
       limit: req.body?.limit ? Number(req.body.limit) : undefined,
       offset: req.body?.offset != null ? Number(req.body.offset) : undefined,
@@ -150,6 +155,20 @@ callingListsRouter.post('/officers', async (req, res) => {
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'officer match failed' });
+  }
+});
+
+callingListsRouter.post('/florida-officers', async (req, res) => {
+  try {
+    const result = await matchFloridaOfficers({
+      list_id: String(req.body?.list_id ?? ''),
+      limit: req.body?.limit ? Number(req.body.limit) : undefined,
+      offset: req.body?.offset != null ? Number(req.body.offset) : undefined,
+      only_unmatched: req.body?.only_unmatched,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'florida officer match failed' });
   }
 });
 

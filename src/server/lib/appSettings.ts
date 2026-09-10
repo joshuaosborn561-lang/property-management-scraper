@@ -1,7 +1,12 @@
 import { config } from '../config.js';
 import { getSupabase, hasSupabase, ingestSecret } from './supabase.js';
 
-export const SETTING_KEYS = ['shovels_api_key', 'veriphone_api_key', 'texas_cpa_api_key'] as const;
+export const SETTING_KEYS = [
+  'shovels_api_key',
+  'veriphone_api_key',
+  'texas_cpa_api_key',
+  'florida_sos_api_key',
+] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 export type KeySource = 'none' | 'env' | 'claude';
 
@@ -16,12 +21,14 @@ const envFallback: Record<SettingKey, string> = {
   shovels_api_key: config.permitstackApiKey || config.shovelsApiKey,
   veriphone_api_key: config.veriphoneApiKey,
   texas_cpa_api_key: config.texasCpaApiKey,
+  florida_sos_api_key: config.floridaSosApiKey,
 };
 
 const slots: Record<SettingKey, Slot> = {
   shovels_api_key: emptySlot(envFallback.shovels_api_key),
   veriphone_api_key: emptySlot(envFallback.veriphone_api_key),
   texas_cpa_api_key: emptySlot(envFallback.texas_cpa_api_key),
+  florida_sos_api_key: emptySlot(envFallback.florida_sos_api_key),
 };
 
 let loadedFromStore = false;
@@ -119,8 +126,9 @@ export async function enrichmentKeysStatus() {
     shovels_api_key: settingStatus('shovels_api_key'),
     veriphone_api_key: settingStatus('veriphone_api_key'),
     texas_cpa_api_key: settingStatus('texas_cpa_api_key'),
+    florida_sos_api_key: settingStatus('florida_sos_api_key'),
     assistant_instructions:
-      'Show only masked fingerprints. Never echo full keys. Cayden sets missing ones with set_enrichment_api_key.',
+      'Show only masked fingerprints. Never echo full keys. Cayden sets missing ones with set_enrichment_api_key. florida_sos_api_key is optional — public Sunbiz HTML is tried first; a Sunbiz Daily (free) or sunbizdata (sb_) key is only needed if Cloudflare blocks this host.',
   };
 }
 
@@ -137,6 +145,9 @@ async function persistSetting(key: SettingKey, value: string, by: string): Promi
 
 function canonicalSettingKey(key: string): string {
   if (key === 'permitstack_api_key') return 'shovels_api_key';
+  if (key === 'sunbiz_api_key' || key === 'sunbizdaily_api_key' || key === 'sunbizdata_api_key') {
+    return 'florida_sos_api_key';
+  }
   return key;
 }
 

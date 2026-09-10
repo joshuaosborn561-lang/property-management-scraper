@@ -147,6 +147,7 @@ export function mountMcpHttp(app: Express): void {
       enrichment_keys: {
         veriphone: enrichKeys.veriphone_api_key,
         texas_cpa: enrichKeys.texas_cpa_api_key,
+        florida_sos: enrichKeys.florida_sos_api_key,
       },
       tools: [
         'health',
@@ -160,6 +161,7 @@ export function mountMcpHttp(app: Express): void {
         'set_enrichment_api_key',
         'score_calling_list',
         'match_texas_officers',
+        'match_florida_officers',
         'lookup_line_type',
         'owner_people_search',
         'record_owner_cell',

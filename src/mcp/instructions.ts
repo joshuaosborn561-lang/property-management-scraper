@@ -65,7 +65,7 @@ The live PermitStack key is already configured on the server (\`PERMITSTACK_API_
 Goal: dial **owner cells**, not office/main/license lines.
 1. \`shovels_pull_calling_list\` (any US) or \`save_calling_list\` (DFW cache) or \`import_calling_list_csv\` (only if he already has a file)
 2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
-3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\` — Texas entities only. Florida lists: \`match_florida_officers(only_unmatched=true, limit=40)\` (public Sunbiz; optional \`florida_sos_api_key\` if Cloudflare blocks).
+3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\` — Texas entities only. Florida lists: \`match_florida_officers(only_unmatched=true, limit=40)\` (public Sunbiz first; a rejected SOS key falls back to HTML or returns ok=false with zero writes — never stamps \`error\`).
 4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
 5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match+mobile**. Verified mobiles with no officer source (out-of-state) are \`mobile_unverified_owner\`. Leftovers (\`agent\` / \`different\`): \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
 6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells. \`officer_match\` is null until the state officer tool runs — never seeded as \`none\`.

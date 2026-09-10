@@ -95,5 +95,22 @@ describe('setAppSetting florida_sos_api_key', { concurrency: false }, () => {
     const status = settingStatus('florida_sos_api_key');
     assert.equal(status.configured, true);
     assert.equal(status.reason, null);
+    assert.equal(status.source, 'claude');
+  });
+
+  it('does not report success when persist is required and Supabase is missing', async () => {
+    const before = settingStatus('florida_sos_api_key');
+    const result = await setAppSetting({
+      key: 'florida_sos_api_key',
+      api_key: 'sb_live_testkey_123',
+      persist: true,
+      set_by: 'test',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.persisted, false);
+    assert.match(String(result.error), /persist|Supabase/i);
+    const after = settingStatus('florida_sos_api_key');
+    assert.equal(after.source, before.source);
+    assert.notEqual(after.source, 'claude');
   });
 });

@@ -50,11 +50,11 @@ export interface PullShovelsCallingListInput {
   owner?: string;
   /** Must be true to spend Shovels credits on a live pull. */
   confirm?: boolean;
-  /** Resume at this PermitStack page (overrides stored cursor). */
+  /** Resume at this PermitStack page (overrides stored offset). */
   cursor?: string;
   /** Skip the first N contractors in fetch order (page = floor(offset/page_size)+1). */
   offset?: number;
-  /** Clear stored cursors for these geos and start at page 1. */
+  /** Clear stored offsets for these geos and start at record 0. */
   reset_cursor?: boolean;
   fetchPage?: typeof shovelsSearchContractorsPage;
   hydrateProfiles?: typeof hydratePermitstackProfiles;
@@ -132,22 +132,153 @@ export function applyFilters(
   return applyContactFilters(applyStructuralFilters(items, opts), opts);
 }
 
+export type CallingListRestartReason =
+  | 'explicit_cursor'
+  | 'explicit_offset'
+  | 'reset_cursor'
+  | 'unusable_page_cursor'
+  | 'exhausted'
+  | 'marked_done'
+  | null;
+
+export type CallingListCoverage =
+  | 'county_query_empty'
+  | 'no_coverage'
+  | 'exhausted'
+  | 'empty_page'
+  | 'ok'
+  | 'restart_required';
+
+export type CallingListJobSnapshot = {
+  cursor: string | null;
+  done?: boolean;
+  offset?: number;
+  fetched?: number;
+  page_size?: number;
+  total_count?: number | null;
+};
+
+export function pageSkipForOffset(
+  offset: number,
+  pageSize: number,
+): { cursor: string | null; skip: number } {
+  if (offset <= 0) return { cursor: null, skip: 0 };
+  const page = Math.floor(offset / pageSize) + 1;
+  return { cursor: String(page), skip: offset % pageSize };
+}
+
+/** Absolute records already consumed — never a raw page index. */
+export function recordOffsetFromJob(job: CallingListJobSnapshot | undefined): number | null {
+  if (!job) return null;
+  if (typeof job.offset === 'number' && Number.isFinite(job.offset) && job.offset >= 0) {
+    return job.offset;
+  }
+  if (typeof job.fetched === 'number' && Number.isFinite(job.fetched) && job.fetched >= 0) {
+    return job.fetched;
+  }
+  if (job.cursor && /^\d+$/.test(job.cursor) && typeof job.page_size === 'number' && job.page_size > 0) {
+    const page = Number(job.cursor);
+    if (!Number.isFinite(page) || page <= 1) return 0;
+    return (page - 1) * job.page_size;
+  }
+  return null;
+}
+
 export function startCursorForGeo(
   opts: PullShovelsCallingListInput,
-  persisted: { cursor: string | null; done?: boolean } | undefined,
+  persisted: CallingListJobSnapshot | undefined,
   pageSize: number,
-): { cursor: string | null; skip: number; resumed: boolean } {
+): {
+  cursor: string | null;
+  skip: number;
+  resumed: boolean;
+  offset: number;
+  restart_reason: CallingListRestartReason;
+} {
   if (opts.cursor && /^\d+$/.test(opts.cursor)) {
-    return { cursor: opts.cursor, skip: 0, resumed: false };
+    const page = Math.max(1, Number(opts.cursor));
+    return {
+      cursor: String(page),
+      skip: 0,
+      resumed: false,
+      offset: (page - 1) * pageSize,
+      restart_reason: 'explicit_cursor',
+    };
   }
   if (opts.offset != null && opts.offset > 0) {
-    const page = Math.floor(opts.offset / pageSize) + 1;
-    return { cursor: String(page), skip: opts.offset % pageSize, resumed: false };
+    const { cursor, skip } = pageSkipForOffset(opts.offset, pageSize);
+    return {
+      cursor,
+      skip,
+      resumed: false,
+      offset: opts.offset,
+      restart_reason: 'explicit_offset',
+    };
   }
-  if (persisted && persisted.done !== true && persisted.cursor) {
-    return { cursor: persisted.cursor, skip: 0, resumed: true };
+  if (opts.reset_cursor === true) {
+    return { cursor: null, skip: 0, resumed: false, offset: 0, restart_reason: 'reset_cursor' };
   }
-  return { cursor: null, skip: 0, resumed: false };
+
+  const stored = recordOffsetFromJob(persisted);
+  const total = persisted?.total_count ?? null;
+
+  if (stored != null && stored > 0) {
+    if (total != null && stored >= total) {
+      return { cursor: null, skip: 0, resumed: false, offset: stored, restart_reason: 'exhausted' };
+    }
+    const { cursor, skip } = pageSkipForOffset(stored, pageSize);
+    return { cursor, skip, resumed: true, offset: stored, restart_reason: null };
+  }
+
+  if (persisted?.cursor && stored == null) {
+    return {
+      cursor: null,
+      skip: 0,
+      resumed: false,
+      offset: 0,
+      restart_reason: 'unusable_page_cursor',
+    };
+  }
+
+  if (persisted?.done === true) {
+    return { cursor: null, skip: 0, resumed: false, offset: 0, restart_reason: 'marked_done' };
+  }
+
+  return { cursor: null, skip: 0, resumed: false, offset: 0, restart_reason: null };
+}
+
+export function classifyCallingListCoverage(opts: {
+  countyEmpty: boolean;
+  totalCount: number | null;
+  startOffset: number;
+  fetchedThisCall: number;
+  nextOffset: number;
+  truncated: boolean;
+  apiNextCursor: string | null;
+}): { coverage: CallingListCoverage; done: boolean } {
+  const { countyEmpty, totalCount, startOffset, fetchedThisCall, nextOffset, truncated, apiNextCursor } =
+    opts;
+  if (countyEmpty) {
+    return { coverage: 'county_query_empty', done: true };
+  }
+  if (totalCount === 0 && fetchedThisCall === 0) {
+    return { coverage: 'no_coverage', done: true };
+  }
+  if (totalCount != null && (startOffset >= totalCount || (fetchedThisCall === 0 && nextOffset >= totalCount))) {
+    return { coverage: 'exhausted', done: true };
+  }
+  if (fetchedThisCall === 0) {
+    if (totalCount != null && startOffset < totalCount) {
+      return { coverage: 'empty_page', done: false };
+    }
+    if (startOffset === 0) {
+      return { coverage: 'no_coverage', done: true };
+    }
+    return { coverage: 'exhausted', done: true };
+  }
+  const reachedApiEnd = !truncated && !apiNextCursor;
+  const done = totalCount != null ? nextOffset >= totalCount : reachedApiEnd;
+  return { coverage: 'ok', done };
 }
 
 function slugOwner(owner: string): string {
@@ -285,6 +416,40 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     });
     const prior = state.jobs[key];
     const start = startCursorForGeo(opts, prior, pageSize);
+    const skipFetch =
+      start.restart_reason === 'exhausted' ||
+      start.restart_reason === 'marked_done' ||
+      start.restart_reason === 'unusable_page_cursor';
+
+    if (skipFetch) {
+      const coverage =
+        start.restart_reason === 'unusable_page_cursor' ? 'restart_required' : 'exhausted';
+      perGeo.push({
+        place: t.place,
+        requested: t,
+        geo,
+        fetched: 0,
+        unique_added: 0,
+        pages: 0,
+        truncated: false,
+        next_cursor: prior?.cursor ?? null,
+        next_offset: start.offset,
+        start_offset: start.offset,
+        page_size: pageSize,
+        total_count: prior?.total_count ?? null,
+        resumed_from_cursor: false,
+        restart_reason: start.restart_reason,
+        start_cursor: start.cursor,
+        county_query_empty: false,
+        coverage,
+        coverage_error:
+          start.restart_reason === 'unusable_page_cursor'
+            ? 'Stored cursor is a page index without page_size/offset; pass offset or reset_cursor=true.'
+            : null,
+      });
+      continue;
+    }
+
     const pulled = await pullContractorsForGeo({
       geo,
       place: t.place,
@@ -306,7 +471,9 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       byId.set(item.id, item);
       added += 1;
     }
-    const countyEmpty = geo.kind === 'county' && pulled.items.length === 0 && !start.resumed;
+    const nextOffset = start.offset + windowItems.length;
+    const totalCount = pulled.total_count ?? prior?.total_count ?? null;
+    const countyEmpty = geo.kind === 'county' && pulled.items.length === 0 && !start.resumed && start.offset === 0;
     if (countyEmpty) {
       countyErrors.push({
         place: t.place,
@@ -315,13 +482,25 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
         error: countyJurisdictionError(geo),
       });
     }
-    const done = !pulled.truncated && !pulled.next_cursor;
+    const classified = classifyCallingListCoverage({
+      countyEmpty,
+      totalCount,
+      startOffset: start.offset,
+      fetchedThisCall: windowItems.length,
+      nextOffset,
+      truncated: pulled.truncated,
+      apiNextCursor: pulled.next_cursor,
+    });
+    const nextPage = classified.done ? null : pageSkipForOffset(nextOffset, pageSize).cursor;
     state.jobs[key] = {
       place: t.place,
       geo_id: geo.geo_id,
-      cursor: pulled.next_cursor,
-      fetched: (prior?.fetched ?? 0) + windowItems.length,
-      done,
+      cursor: nextPage,
+      offset: nextOffset,
+      page_size: pageSize,
+      fetched: nextOffset,
+      total_count: totalCount,
+      done: classified.done,
       updated_at: new Date().toISOString(),
       window: { ...window, property_type: propertyType },
     };
@@ -334,11 +513,16 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       unique_added: added,
       pages: pulled.pages,
       truncated: pulled.truncated,
-      next_cursor: pulled.next_cursor,
+      next_cursor: nextPage,
+      next_offset: nextOffset,
+      start_offset: start.offset,
+      page_size: pageSize,
+      total_count: totalCount,
       resumed_from_cursor: start.resumed,
+      restart_reason: start.restart_reason,
       start_cursor: start.cursor,
       county_query_empty: countyEmpty,
-      coverage: countyEmpty ? 'county_query_empty' : pulled.items.length === 0 ? 'no_coverage' : 'ok',
+      coverage: classified.coverage,
       coverage_error: countyEmpty ? countyJurisdictionError(geo) : null,
     });
   }
@@ -522,11 +706,15 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       next_cursors: perGeo.map((g) => ({
         place: g.place,
         next_cursor: g.next_cursor ?? null,
+        next_offset: g.next_offset ?? null,
+        page_size: g.page_size ?? pageSize,
         resumed_from_cursor: g.resumed_from_cursor ?? false,
+        restart_reason: g.restart_reason ?? null,
+        coverage: g.coverage ?? null,
       })),
     },
     assistant_instructions: hydration.rate_limited
-      ? 'Hydration hit the 60 req/min cap. Counters split ok / rate_limited / failed / skipped_synthetic_id. Re-run the same geo to resume from the stored cursor (new contractors). Do not dump rows into chat.'
-      : 'Live PermitStack list is in Supabase. Tell Cayden the list id. Filter with query_calling_list. Hydration runs on this call\'s window after chain/permit filters. A second call on the same geo resumes the cursor. Do not dump rows into chat.',
+      ? 'Hydration hit the 60 req/min cap. Counters split ok / rate_limited / failed / skipped_synthetic_id. Re-run the same geo to resume from the stored record offset (new contractors). Do not dump rows into chat.'
+      : 'Live PermitStack list is in Supabase. Tell Cayden the list id. Filter with query_calling_list. Hydration runs on this call\'s window after chain/permit filters. A second call on the same geo resumes the stored record offset (safe across page_size). A restart from zero always includes restart_reason. Do not dump rows into chat.',
   };
 }

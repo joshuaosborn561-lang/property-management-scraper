@@ -422,6 +422,7 @@ export async function pullContractorsForGeo(opts: {
   next_cursor: string | null;
   headers_last: ShovelsHeaders | null;
   stopped_reason: 'complete' | 'max_records' | 'credit_floor' | 'empty' | null;
+  total_count: number | null;
 }> {
   const pageSize = Math.min(100, Math.max(1, opts.page_size ?? 100));
   const maxRecords = Math.max(1, opts.max_records ?? 2000);
@@ -436,6 +437,7 @@ export async function pullContractorsForGeo(opts: {
   let truncated = false;
   let stopped: 'complete' | 'max_records' | 'credit_floor' | 'empty' | null = null;
   let first = true;
+  let totalCount: number | null = null;
 
   while (pages < maxPages) {
     // Hard stop BEFORE spending another request.
@@ -465,6 +467,9 @@ export async function pullContractorsForGeo(opts: {
     headersLast = page.headers;
     credits += page.headers.credits_request ?? 0;
     pages += 1;
+    if (totalCount == null && page.total_count_raw != null) {
+      totalCount = parseTotalCount(page.total_count_raw).value;
+    }
 
     if (
       page.headers.credits_remaining != null &&
@@ -515,5 +520,6 @@ export async function pullContractorsForGeo(opts: {
     next_cursor: cursor,
     headers_last: headersLast,
     stopped_reason: stopped,
+    total_count: totalCount,
   };
 }

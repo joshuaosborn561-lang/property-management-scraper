@@ -254,6 +254,9 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
                   : 'ok',
             last_job_pages: hist?.pages ?? null,
             last_job_fetched: hist?.fetched ?? null,
+            /** Null when the probe returned no contractor rows (county permit totals are not contractors). */
+            contractor_count: probe.items_on_probe === 0 ? null : probe.total_count,
+            permit_total: probe.total_count,
           });
         }
       }
@@ -290,7 +293,10 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
   }
 
   const probed = geos.filter((g) => g.probed === true);
-  const contractors = probed.reduce((n, g) => n + Number(g.total_count || 0), 0);
+  const contractorCounts = probed
+    .map((g) => ('contractor_count' in g ? (g as { contractor_count?: number | null }).contractor_count : null));
+  const hasContractorCount = contractorCounts.some((n) => n != null);
+  const contractors = contractorCounts.reduce((n: number, c) => n + (typeof c === 'number' ? c : 0), 0);
   let pages = probed.reduce((n, g) => n + Number(g.estimated_credits || 0), 0);
   let companies = contractors;
   if (q.max_records && q.max_records > 0) {
@@ -341,7 +347,7 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     no_coverage_count: noCoverage.length,
     window: { ...window, property_type: propertyType, page_size: pageSize },
     geos,
-    contractors: resolveOnly ? null : contractors,
+    contractors: resolveOnly ? null : hasContractorCount ? contractors : probed.length ? null : contractors,
     billing: {
       provider: 'permitstack',
       unit: '1 HTTP request = 1 contractor-search page (per_page up to 100) or 1 profile hydration',

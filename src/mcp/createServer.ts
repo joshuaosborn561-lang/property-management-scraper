@@ -692,7 +692,7 @@ NEXT: permits_contractors_query(place="Denton_County") / save_calling_list.`,
       title: 'Live PermitStack pull → Supabase calling list (any US geo)',
       description: `WHEN TO USE: Cayden wants a GC calling list for ANY US market. Alias: permitstack_pull_calling_list.
 WHAT IT DOES: Without confirm=true, returns a request estimate only. With confirm=true, pages PermitStack /v1/contractors/search (cities) or /v1/permits/search (county jurisdiction / ZIP), writes scrape_leads + calling_lists. has_phone=true hydrates THIS window's profiles (paced under 60 req/min; 429s retry). Chain/permit filters run before hydration.
-RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). Re-run the same geo to resume the stored cursor (new contractors). Pass cursor/offset/reset_cursor to control paging. east_coast / west_coast expand to major metros.
+RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). Re-run the same geo to resume the stored record offset (new contractors; safe if page_size changes). Pass offset/cursor/reset_cursor to control paging. A restart from zero includes restart_reason. east_coast / west_coast expand to major metros.
 NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
       inputSchema: {
         geos: z
@@ -719,9 +719,9 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
           .boolean()
           .optional()
           .describe('Must be true to spend Shovels credits and write the list'),
-        cursor: z.string().optional().describe('PermitStack page to resume from (overrides stored cursor)'),
-        offset: z.number().int().min(0).optional().describe('Skip first N contractors in fetch order'),
-        reset_cursor: z.boolean().optional().describe('Clear stored cursor and start at page 1'),
+        cursor: z.string().optional().describe('PermitStack page to resume from (overrides stored offset)'),
+        offset: z.number().int().min(0).optional().describe('Skip first N contractors in fetch order (absolute; preferred over cursor)'),
+        reset_cursor: z.boolean().optional().describe('Clear stored offset and start at record 0'),
       },
       annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
     },

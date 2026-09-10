@@ -47,19 +47,23 @@ export interface ShovelsPullInput {
   resolveGeo?: typeof resolveShovelsGeo;
 }
 
+export type PullJobState = {
+  place: string;
+  geo_id: string;
+  cursor: string | null;
+  fetched: number;
+  done: boolean;
+  updated_at: string;
+  window: { date_from: string; date_to: string; property_type: string };
+  /** Absolute records already consumed in this geo (page-size independent). */
+  offset?: number;
+  /** Page size that produced `cursor`, if it is still a page index. */
+  page_size?: number;
+  total_count?: number | null;
+};
+
 type PullCursorState = {
-  jobs: Record<
-    string,
-    {
-      place: string;
-      geo_id: string;
-      cursor: string | null;
-      fetched: number;
-      done: boolean;
-      updated_at: string;
-      window: { date_from: string; date_to: string; property_type: string };
-    }
-  >;
+  jobs: Record<string, PullJobState>;
 };
 
 function isoDate(d: Date): string {

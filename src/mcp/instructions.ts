@@ -25,7 +25,7 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - East coast → \`geos=east_coast\`. West coast → \`geos=west_coast\`.
 - Flow: resolve_only / dry_run → estimate → \`shovels_pull\` → \`permits_contractors_query(place=…)\`.
 - A \`coverage=no_coverage\` after a **city** resolve is a valid answer (thin coverage). A county 0 is \`county_query_empty\`.
-- \`permitstack_pull_calling_list\` stores a per-geo cursor. A second call on the same geo returns **new** contractors. Hydration applies to that call's window (after chain/permit filters), paced under 60 req/min. Counters: \`hydrated_ok\` / \`hydrated_rate_limited\` / \`hydrated_failed\` / \`hydrated_skipped_synthetic_id\`.
+- \`permitstack_pull_calling_list\` stores a per-geo **record offset** (not a page index). A second call on the same geo returns **new** contractors even if \`page_size\` changes. Hydration applies to that call's window (after chain/permit filters), paced under 60 req/min. Counters: \`hydrated_ok\` / \`hydrated_rate_limited\` / \`hydrated_failed\` / \`hydrated_skipped_synthetic_id\`. A restart from page 1 always sets \`restart_reason\`. Coverage is \`no_coverage\` / \`exhausted\` / \`empty_page\` / \`county_query_empty\` / \`ok\`.
 
 ## Supabase target (critical)
 - Every \`health\` and \`sync_to_supabase\` / \`save_calling_list\` response includes \`supabase_project\` + \`supabase_schema\`.

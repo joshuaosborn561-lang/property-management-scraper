@@ -53,6 +53,72 @@ export interface ContractorCountProbe {
   coverage_error?: string | null;
 }
 
+/**
+ * Shared by the estimator probe and the calling-list puller.
+ * A county first page with 0 contractor rows is empty even when `total_count` is a
+ * permit total (Harris County: 1110 permits, 0 contractor identities).
+ */
+export function isCountyQueryEmpty(opts: {
+  kind: GeoKind | string;
+  itemsOnPage: number;
+  offset?: number;
+  resumed?: boolean;
+}): boolean {
+  return (
+    opts.kind === 'county' &&
+    opts.itemsOnPage === 0 &&
+    (opts.offset ?? 0) === 0 &&
+    opts.resumed !== true
+  );
+}
+
+export type ContractorProbeCoverage = 'county_query_empty' | 'no_coverage' | 'count_unreliable' | 'ok';
+
+function pagesForCount(count: number, pageSize: number): number {
+  if (count <= 0) return 0;
+  return Math.ceil(count / pageSize);
+}
+
+/** Map a probe onto estimator coverage. Permit totals are not contractor counts. */
+export function classifyProbeCoverage(
+  probe: Pick<
+    ContractorCountProbe,
+    'county_query_empty' | 'no_coverage' | 'count_unreliable' | 'items_on_probe' | 'total_count'
+  >,
+  pageSize = 100,
+): {
+  coverage: ContractorProbeCoverage;
+  contractor_count: number | null;
+  estimated_pages: number;
+} {
+  if (probe.county_query_empty === true) {
+    return { coverage: 'county_query_empty', contractor_count: null, estimated_pages: 0 };
+  }
+  if (probe.items_on_probe === 0) {
+    // Permit total (or a blank first page) is not a contractor count — do not estimate pages.
+    return {
+      coverage: probe.no_coverage ? 'no_coverage' : 'county_query_empty',
+      contractor_count: null,
+      estimated_pages: 0,
+    };
+  }
+  if (probe.no_coverage) {
+    return { coverage: 'no_coverage', contractor_count: null, estimated_pages: 0 };
+  }
+  if (probe.count_unreliable) {
+    return {
+      coverage: 'count_unreliable',
+      contractor_count: probe.total_count,
+      estimated_pages: pagesForCount(probe.total_count, pageSize),
+    };
+  }
+  return {
+    coverage: 'ok',
+    contractor_count: probe.total_count,
+    estimated_pages: pagesForCount(probe.total_count, pageSize),
+  };
+}
+
 export interface ShovelsApiContractor {
   id: string;
   name: string | null;
@@ -346,8 +412,12 @@ export async function probeContractorCount(opts: {
   const itemsOnPage = page.items.length;
   const hasMore = Boolean(page.next_cursor);
   const countyEmpty =
-    opts.geo.kind === 'county' &&
-    (page.county_query_empty === true || (parsed.value === 0 && !hasMore && itemsOnPage === 0));
+    isCountyQueryEmpty({
+      kind: opts.geo.kind,
+      itemsOnPage,
+      offset: 0,
+      resumed: false,
+    }) || page.county_query_empty === true;
   return {
     geo: opts.geo,
     total_count: parsed.value,

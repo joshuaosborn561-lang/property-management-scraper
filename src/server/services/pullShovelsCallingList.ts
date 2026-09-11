@@ -12,6 +12,7 @@ import {
 import {
   GeoResolutionError,
   hasShovelsApi,
+  isCountyQueryEmpty,
   pullContractorsForGeo,
   resolveShovelsGeo,
   shovelsSearchContractorsPage,
@@ -29,6 +30,7 @@ import { replaceLeads, upsertExport, upsertJob } from './syncToSupabase.js';
 
 const DEFAULT_MAX_RECORDS = 1500;
 const HARD_MAX_RECORDS = 8000;
+const HARD_MAX_REQUESTS = 8000;
 
 export interface PullShovelsCallingListInput {
   geos?: string;
@@ -41,6 +43,11 @@ export interface PullShovelsCallingListInput {
   property_type?: string;
   page_size?: number;
   max_records?: number;
+  /**
+   * Hydration ceiling. Default equals max_records so spend matches the old
+   * "hydrate what we fetched" budget. Raise it to hunt for phones on low-yield geos.
+   */
+  max_requests?: number;
   has_phone?: boolean;
   has_email?: boolean;
   exclude_national_chains?: boolean;
@@ -132,6 +139,257 @@ export function applyFilters(
   return applyContactFilters(applyStructuralFilters(items, opts), opts);
 }
 
+/** Drop ids already hydrated/observed this session. Does not mutate `seen`. */
+export function splitSeenContractors(
+  items: ShovelsApiContractor[],
+  seen: Set<string>,
+): { fresh: ShovelsApiContractor[]; duplicates_skipped: number } {
+  const fresh: ShovelsApiContractor[] = [];
+  let duplicates_skipped = 0;
+  for (const item of items) {
+    if (!item.id || seen.has(item.id)) {
+      duplicates_skipped += 1;
+      continue;
+    }
+    fresh.push(item);
+  }
+  return { fresh, duplicates_skipped };
+}
+
+export function contactFilterYield(uniqueAfterFilters: number, hydrateRequests: number): number | null {
+  if (hydrateRequests <= 0) return null;
+  return uniqueAfterFilters / hydrateRequests;
+}
+
+function addHydration(a: HydrationCounters, b: HydrationCounters): HydrationCounters {
+  return {
+    attempted: a.attempted + b.attempted,
+    hydrated_ok: a.hydrated_ok + b.hydrated_ok,
+    hydrated_rate_limited: a.hydrated_rate_limited + b.hydrated_rate_limited,
+    hydrated_failed: a.hydrated_failed + b.hydrated_failed,
+    hydrated_skipped_synthetic_id: a.hydrated_skipped_synthetic_id + b.hydrated_skipped_synthetic_id,
+    requests: a.requests + b.requests,
+    http_attempts: a.http_attempts + b.http_attempts,
+    rate_limited: a.rate_limited || b.rate_limited,
+  };
+}
+
+export type CallingListWindowResult = {
+  survivors: ShovelsApiContractor[];
+  fetched: number;
+  unique_added: number;
+  duplicates_skipped: number;
+  pages: number;
+  credits_spent: number;
+  truncated: boolean;
+  next_cursor: string | null;
+  total_count: number | null;
+  county_empty: boolean;
+  hydration: HydrationCounters;
+  id_resolve: { resolved: number; unresolved: number; requests: number };
+  seen_ids: string[];
+  zip_cannot_hydrate: boolean;
+  structural_kept: number;
+};
+
+/**
+ * Walk provider pages, skip already-seen ids before hydration, and keep going until
+ * `max_records` rows survive contact filters, `max_requests` hydrations, or the geo ends.
+ */
+export async function collectCallingListWindow(opts: {
+  geo: ShovelsGeo;
+  place: string;
+  permit_from: string;
+  permit_to: string;
+  property_type?: string;
+  page_size: number;
+  max_records: number;
+  max_requests: number;
+  start_cursor: string | null;
+  first_page_skip: number;
+  start_offset: number;
+  resumed: boolean;
+  seen: Set<string>;
+  filters: PullShovelsCallingListInput;
+  fetchPage?: typeof shovelsSearchContractorsPage;
+  hydrateProfiles?: typeof hydratePermitstackProfiles;
+}): Promise<CallingListWindowResult> {
+  const survivors: ShovelsApiContractor[] = [];
+  let cursor = opts.start_cursor;
+  let skip = Math.max(0, opts.first_page_skip);
+  let pages = 0;
+  let credits = 0;
+  let fetched = 0;
+  let duplicates_skipped = 0;
+  let structuralKept = 0;
+  let hydration: HydrationCounters = { ...EMPTY_HYDRATION };
+  let idResolve = { resolved: 0, unresolved: 0, requests: 0 };
+  let totalCount: number | null = null;
+  let truncated = false;
+  let first = true;
+  let zipCannotHydrate = false;
+  const hydrateFn = opts.hydrateProfiles ?? hydratePermitstackProfiles;
+  const wantPhone = opts.filters.has_phone === true;
+
+  while (survivors.length < opts.max_records) {
+    if (wantPhone && hydration.requests >= opts.max_requests) break;
+
+    const pageCursor = cursor;
+    const pulled = await pullContractorsForGeo({
+      geo: opts.geo,
+      place: opts.place,
+      permit_from: opts.permit_from,
+      permit_to: opts.permit_to,
+      property_type: opts.property_type,
+      page_size: opts.page_size,
+      max_records: opts.page_size,
+      max_pages: 1,
+      start_cursor: cursor,
+      fetchPage: opts.fetchPage,
+    });
+    pages += pulled.pages;
+    credits += pulled.credits_spent;
+    if (pulled.truncated) truncated = true;
+    if (totalCount == null && pulled.total_count != null) totalCount = pulled.total_count;
+
+    if (
+      first &&
+      isCountyQueryEmpty({
+        kind: opts.geo.kind,
+        itemsOnPage: pulled.items.length,
+        offset: opts.start_offset,
+        resumed: opts.resumed,
+      })
+    ) {
+      return {
+        survivors: [],
+        fetched: 0,
+        unique_added: 0,
+        duplicates_skipped: 0,
+        pages,
+        credits_spent: credits,
+        truncated: false,
+        next_cursor: null,
+        total_count: totalCount,
+        county_empty: true,
+        hydration,
+        id_resolve: idResolve,
+        seen_ids: [...opts.seen],
+        zip_cannot_hydrate: false,
+        structural_kept: 0,
+      };
+    }
+    first = false;
+
+    let pageItems = pulled.items;
+    if (skip > 0) {
+      pageItems = pageItems.slice(skip);
+      skip = 0;
+    }
+    fetched += pageItems.length;
+
+    const { fresh, duplicates_skipped: dups } = splitSeenContractors(pageItems, opts.seen);
+    duplicates_skipped += dups;
+
+    const structural = applyStructuralFilters(fresh, opts.filters);
+    structuralKept += structural.length;
+    for (const item of fresh) {
+      if (!structural.some((s) => s.id === item.id)) opts.seen.add(item.id);
+    }
+
+    let queue = structural;
+    let stayedOnPage = false;
+
+    if (wantPhone && queue.length) {
+      const synthetic = queue.filter((c) => isSyntheticContractorId(c.id));
+      if (synthetic.length) {
+        const resolvedIds = await resolveSyntheticContractorIds(queue, { get: permitstackGet });
+        idResolve = {
+          resolved: idResolve.resolved + resolvedIds.resolved,
+          unresolved: idResolve.unresolved + resolvedIds.unresolved,
+          requests: idResolve.requests + resolvedIds.requests,
+        };
+        credits += resolvedIds.requests;
+        queue = resolvedIds.items;
+      }
+      const hydratable = queue.filter((c) => c.id && !isSyntheticContractorId(c.id));
+      const stillSynthetic = queue.filter((c) => isSyntheticContractorId(c.id));
+      for (const row of stillSynthetic) opts.seen.add(row.id);
+      if (hydratable.length === 0 && stillSynthetic.length === queue.length && stillSynthetic.length > 0) {
+        zipCannotHydrate = true;
+        cursor = pulled.next_cursor;
+        if (!cursor || !pulled.items.length) break;
+        continue;
+      }
+      queue = hydratable;
+      while (queue.length && survivors.length < opts.max_records && hydration.requests < opts.max_requests) {
+        const roomHydrations = opts.max_requests - hydration.requests;
+        const roomSurvivors = opts.max_records - survivors.length;
+        const batch = queue.slice(0, Math.min(roomHydrations, roomSurvivors, queue.length));
+        queue = queue.slice(batch.length);
+        const hydrated = await hydrateFn(batch, { max: batch.length });
+        hydration = addHydration(hydration, {
+          attempted: hydrated.attempted,
+          hydrated_ok: hydrated.hydrated_ok,
+          hydrated_rate_limited: hydrated.hydrated_rate_limited,
+          hydrated_failed: hydrated.hydrated_failed,
+          hydrated_skipped_synthetic_id: hydrated.hydrated_skipped_synthetic_id,
+          requests: hydrated.requests,
+          http_attempts: hydrated.http_attempts,
+          rate_limited: hydrated.rate_limited,
+        });
+        credits += hydrated.requests;
+        for (const item of hydrated.items) opts.seen.add(item.id);
+        const passed = applyContactFilters(hydrated.items, opts.filters);
+        for (const item of passed) {
+          if (survivors.length >= opts.max_records) break;
+          survivors.push(item);
+        }
+      }
+      if (queue.length) {
+        stayedOnPage = true;
+        cursor = pageCursor;
+      }
+    } else {
+      const passed = applyContactFilters(queue, opts.filters);
+      for (const item of queue) {
+        if (!passed.some((p) => p.id === item.id)) opts.seen.add(item.id);
+      }
+      for (const item of passed) {
+        if (survivors.length >= opts.max_records) {
+          stayedOnPage = true;
+          cursor = pageCursor;
+          break;
+        }
+        opts.seen.add(item.id);
+        survivors.push(item);
+      }
+    }
+
+    if (stayedOnPage) break;
+    cursor = pulled.next_cursor;
+    if (!cursor || !pulled.items.length) break;
+  }
+
+  return {
+    survivors,
+    fetched,
+    unique_added: survivors.length,
+    duplicates_skipped,
+    pages,
+    credits_spent: credits,
+    truncated: truncated || survivors.length >= opts.max_records,
+    next_cursor: cursor,
+    total_count: totalCount,
+    county_empty: false,
+    hydration,
+    id_resolve: idResolve,
+    seen_ids: [...opts.seen],
+    zip_cannot_hydrate: zipCannotHydrate && survivors.length === 0,
+    structural_kept: structuralKept,
+  };
+}
+
 export type CallingListRestartReason =
   | 'explicit_cursor'
   | 'explicit_offset'
@@ -156,6 +414,7 @@ export type CallingListJobSnapshot = {
   fetched?: number;
   page_size?: number;
   total_count?: number | null;
+  seen_ids?: string[];
 };
 
 export function pageSkipForOffset(
@@ -225,6 +484,15 @@ export function startCursorForGeo(
   if (stored != null && stored > 0) {
     if (total != null && stored >= total) {
       return { cursor: null, skip: 0, resumed: false, offset: stored, restart_reason: 'exhausted' };
+    }
+    if (persisted?.seen_ids?.length && persisted.cursor && /^\d+$/.test(persisted.cursor)) {
+      return {
+        cursor: persisted.cursor,
+        skip: 0,
+        resumed: true,
+        offset: stored,
+        restart_reason: null,
+      };
     }
     const { cursor, skip } = pageSkipForOffset(stored, pageSize);
     return { cursor, skip, resumed: true, offset: stored, restart_reason: null };
@@ -334,6 +602,7 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       action: 'shovels_pull_calling_list',
       targets,
       max_records: maxRecords,
+      max_requests: Math.min(HARD_MAX_REQUESTS, Math.max(1, opts.max_requests ?? maxRecords)),
       proposed_list_name: name,
       owner,
       estimate,
@@ -379,6 +648,10 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
   }
 
   const pageSize = opts.page_size ?? 100;
+  const maxRequests = Math.min(
+    HARD_MAX_REQUESTS,
+    Math.max(1, opts.max_requests ?? maxRecords),
+  );
   const state = loadPullState();
   if (opts.reset_cursor === true) {
     for (const { target: t, geo } of resolved) {
@@ -389,7 +662,23 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
         date_to: window.date_to,
         property_type: propertyType,
       });
+      const keptSeen = state.jobs[key]?.seen_ids ?? [];
       delete state.jobs[key];
+      if (keptSeen.length) {
+        state.jobs[key] = {
+          place: t.place,
+          geo_id: geo.geo_id,
+          cursor: null,
+          fetched: 0,
+          done: false,
+          offset: 0,
+          page_size: pageSize,
+          total_count: null,
+          seen_ids: keptSeen,
+          updated_at: new Date().toISOString(),
+          window: { ...window, property_type: propertyType },
+        };
+      }
     }
     savePullState(state);
   }
@@ -400,10 +689,18 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
   let creditsSpent = 0;
   let anyTruncated = false;
   const countyErrors: Array<Record<string, unknown>> = [];
+  let hydrateRequests = 0;
+  let hydration: HydrationCounters = { ...EMPTY_HYDRATION };
+  let idResolve = { resolved: 0, unresolved: 0, requests: 0 };
+  let duplicatesSkipped = 0;
+  let fetchedUnique = 0;
+  let structuralKept = 0;
+  let zipCannotHydrate = false;
 
   for (const { target: t, geo } of resolved) {
     const remaining = maxRecords - byId.size;
-    if (remaining <= 0) {
+    const remainingRequests = maxRequests - hydrateRequests;
+    if (remaining <= 0 || (opts.has_phone === true && remainingRequests <= 0)) {
       anyTruncated = true;
       break;
     }
@@ -430,6 +727,8 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
         geo,
         fetched: 0,
         unique_added: 0,
+        duplicates_skipped: 0,
+        distinct_contractors_added: 0,
         pages: 0,
         truncated: false,
         next_cursor: prior?.cursor ?? null,
@@ -450,30 +749,51 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       continue;
     }
 
-    const pulled = await pullContractorsForGeo({
+    const seen = new Set<string>([...(prior?.seen_ids ?? []), ...byId.keys()]);
+    const positionalSkip = seen.size > 0 ? 0 : start.skip;
+    const windowResult = await collectCallingListWindow({
       geo,
       place: t.place,
       permit_from: window.date_from,
       permit_to: window.date_to,
       property_type: propertyType,
       page_size: pageSize,
-      max_records: remaining + start.skip,
+      max_records: remaining,
+      max_requests: Math.max(0, remainingRequests),
       start_cursor: start.cursor,
+      first_page_skip: positionalSkip,
+      start_offset: start.offset,
+      resumed: start.resumed,
+      seen,
+      filters: opts,
       fetchPage: opts.fetchPage,
+      hydrateProfiles: opts.hydrateProfiles,
     });
-    pages += pulled.pages;
-    creditsSpent += pulled.credits_spent;
-    if (pulled.truncated) anyTruncated = true;
-    const windowItems = pulled.items.slice(start.skip);
+    pages += windowResult.pages;
+    creditsSpent += windowResult.credits_spent;
+    hydrateRequests += windowResult.hydration.requests;
+    hydration = addHydration(hydration, windowResult.hydration);
+    idResolve = {
+      resolved: idResolve.resolved + windowResult.id_resolve.resolved,
+      unresolved: idResolve.unresolved + windowResult.id_resolve.unresolved,
+      requests: idResolve.requests + windowResult.id_resolve.requests,
+    };
+    duplicatesSkipped += windowResult.duplicates_skipped;
+    fetchedUnique += windowResult.fetched;
+    structuralKept += windowResult.structural_kept;
+    if (windowResult.truncated) anyTruncated = true;
+    if (windowResult.zip_cannot_hydrate) zipCannotHydrate = true;
+
     let added = 0;
-    for (const item of windowItems) {
+    for (const item of windowResult.survivors) {
       if (byId.has(item.id)) continue;
       byId.set(item.id, item);
       added += 1;
     }
-    const nextOffset = start.offset + windowItems.length;
-    const totalCount = pulled.total_count ?? prior?.total_count ?? null;
-    const countyEmpty = geo.kind === 'county' && pulled.items.length === 0 && !start.resumed && start.offset === 0;
+
+    const nextOffset = windowResult.seen_ids.length;
+    const totalCount = windowResult.total_count ?? prior?.total_count ?? null;
+    const countyEmpty = windowResult.county_empty;
     if (countyEmpty) {
       countyErrors.push({
         place: t.place,
@@ -486,12 +806,12 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       countyEmpty,
       totalCount,
       startOffset: start.offset,
-      fetchedThisCall: windowItems.length,
+      fetchedThisCall: windowResult.fetched,
       nextOffset,
-      truncated: pulled.truncated,
-      apiNextCursor: pulled.next_cursor,
+      truncated: windowResult.truncated,
+      apiNextCursor: windowResult.next_cursor,
     });
-    const nextPage = classified.done ? null : pageSkipForOffset(nextOffset, pageSize).cursor;
+    const nextPage = classified.done ? null : windowResult.next_cursor;
     state.jobs[key] = {
       place: t.place,
       geo_id: geo.geo_id,
@@ -501,6 +821,7 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       fetched: nextOffset,
       total_count: totalCount,
       done: classified.done,
+      seen_ids: windowResult.seen_ids,
       updated_at: new Date().toISOString(),
       window: { ...window, property_type: propertyType },
     };
@@ -509,10 +830,12 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       place: t.place,
       requested: t,
       geo,
-      fetched: windowItems.length,
+      fetched: windowResult.fetched,
       unique_added: added,
-      pages: pulled.pages,
-      truncated: pulled.truncated,
+      duplicates_skipped: windowResult.duplicates_skipped,
+      distinct_contractors_added: added,
+      pages: windowResult.pages,
+      truncated: windowResult.truncated,
       next_cursor: nextPage,
       next_offset: nextOffset,
       start_offset: start.offset,
@@ -539,67 +862,21 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     };
   }
 
-  let hydrateRequests = 0;
-  let hydration: HydrationCounters = { ...EMPTY_HYDRATION };
-  let idResolve = { resolved: 0, unresolved: 0, requests: 0 };
-  const fetchedUnique = byId.size;
-  const preHydrate = applyStructuralFilters([...byId.values()], opts);
-  byId.clear();
-  for (const item of preHydrate) byId.set(item.id, item);
-
-  if (opts.has_phone === true && byId.size) {
-    const synthetic = [...byId.values()].filter((c) => isSyntheticContractorId(c.id));
-    if (synthetic.length) {
-      const resolvedIds = await resolveSyntheticContractorIds([...byId.values()], {
-        get: permitstackGet,
-      });
-      idResolve = {
-        resolved: resolvedIds.resolved,
-        unresolved: resolvedIds.unresolved,
-        requests: resolvedIds.requests,
-      };
-      creditsSpent += resolvedIds.requests;
-      byId.clear();
-      for (const item of resolvedIds.items) byId.set(item.id, item);
-    }
-
-    const stillSynthetic = [...byId.values()].filter((c) => isSyntheticContractorId(c.id));
-    if (stillSynthetic.length === byId.size) {
-      return {
-        ok: false,
-        error:
-          'has_phone=true cannot hydrate this geo: permit rows have name-only ids (no contractor_id) and name search did not resolve them. Use a city geo, or pull without has_phone.',
-        zip_cannot_hydrate: true,
-        unique_before_filters: byId.size,
-        id_resolve: idResolve,
-        hydration: { ...EMPTY_HYDRATION, hydrated_skipped_synthetic_id: stillSynthetic.length },
-        per_geo: perGeo,
-        ...supabaseTargetMeta(),
-      };
-    }
-
-    const hydrateFn = opts.hydrateProfiles ?? hydratePermitstackProfiles;
-    const hydrated = await hydrateFn([...byId.values()], {
-      max: Math.max(byId.size, maxRecords),
-    });
-    hydration = {
-      attempted: hydrated.attempted,
-      hydrated_ok: hydrated.hydrated_ok,
-      hydrated_rate_limited: hydrated.hydrated_rate_limited,
-      hydrated_failed: hydrated.hydrated_failed,
-      hydrated_skipped_synthetic_id: hydrated.hydrated_skipped_synthetic_id,
-      requests: hydrated.requests,
-      http_attempts: hydrated.http_attempts,
-      rate_limited: hydrated.rate_limited,
+  if (zipCannotHydrate && byId.size === 0) {
+    return {
+      ok: false,
+      error:
+        'has_phone=true cannot hydrate this geo: permit rows have name-only ids (no contractor_id) and name search did not resolve them. Use a city geo, or pull without has_phone.',
+      zip_cannot_hydrate: true,
+      unique_before_filters: fetchedUnique,
+      id_resolve: idResolve,
+      hydration,
+      per_geo: perGeo,
+      ...supabaseTargetMeta(),
     };
-    hydrateRequests = hydrated.requests;
-    creditsSpent += hydrated.requests;
-    byId.clear();
-    for (const item of hydrated.items) byId.set(item.id, item);
   }
 
-  const filtered = applyContactFilters([...byId.values()], opts);
-  const contractors = filtered.map(toContractor);
+  const contractors = [...byId.values()].map(toContractor);
   const jobId = `permit-live-${randomUUID().slice(0, 8)}`;
   const tags = [
     'permit_parcel',
@@ -664,6 +941,7 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       window,
       property_type: propertyType,
       max_records: maxRecords,
+      max_requests: maxRequests,
       has_phone: opts.has_phone ?? null,
       has_email: opts.has_email ?? null,
       exclude_national_chains: opts.exclude_national_chains ?? null,
@@ -688,9 +966,12 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     list: { id: jobId, name, owner, source: 'permitstack_live', row_count: inserted },
     rows_inserted: inserted,
     rows_deleted: deleted,
+    duplicates_skipped: duplicatesSkipped,
+    distinct_contractors_added: contractors.length,
     unique_before_filters: fetchedUnique,
-    unique_after_structural_filters: preHydrate.length,
+    unique_after_structural_filters: structuralKept,
     unique_after_filters: contractors.length,
+    contact_filter_yield: contactFilterYield(contractors.length, hydrateRequests),
     pages_fetched: pages,
     hydrate_requests: hydrateRequests,
     hydration,
@@ -699,6 +980,7 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
     credits_spent_approx: creditsSpent,
     truncated: anyTruncated,
     max_records: maxRecords,
+    max_requests: maxRequests,
     per_geo: perGeo,
     export_bytes: exportBytes,
     window: { ...window, property_type: propertyType },
@@ -714,7 +996,7 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       })),
     },
     assistant_instructions: hydration.rate_limited
-      ? 'Hydration hit the 60 req/min cap. Counters split ok / rate_limited / failed / skipped_synthetic_id. Re-run the same geo to resume from the stored record offset (new contractors). Do not dump rows into chat.'
-      : 'Live PermitStack list is in Supabase. Tell Cayden the list id. Filter with query_calling_list. Hydration runs on this call\'s window after chain/permit filters. A second call on the same geo resumes the stored record offset (safe across page_size). A restart from zero always includes restart_reason. Do not dump rows into chat.',
+      ? 'Hydration hit the 60 req/min cap. Counters split ok / rate_limited / failed / skipped_synthetic_id. Re-run the same geo to resume unseen contractors (seen_ids skip already-hydrated). Do not dump rows into chat.'
+      : 'Live PermitStack list is in Supabase. Tell Cayden the list id. Filter with query_calling_list. max_records is surviving rows after contact filters; max_requests caps hydration. Duplicates are skipped before hydration (duplicates_skipped / distinct_contractors_added). Re-run the same geo to continue; already-seen ids are not hydrated again. A restart from zero always includes restart_reason. Do not dump rows into chat.',
   };
 }

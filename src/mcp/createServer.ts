@@ -693,8 +693,8 @@ NEXT: permits_contractors_query(place="Denton_County") / save_calling_list.`,
     {
       title: 'Live PermitStack pull → Supabase calling list (any US geo)',
       description: `WHEN TO USE: Cayden wants a GC calling list for ANY US market. Alias: permitstack_pull_calling_list.
-WHAT IT DOES: Without confirm=true, returns a request estimate only. With confirm=true, pages PermitStack /v1/contractors/search (cities) or /v1/permits/search (county jurisdiction / ZIP), writes scrape_leads + calling_lists. has_phone=true hydrates THIS window's profiles (paced under 60 req/min; 429s retry). Chain/permit filters run before hydration.
-RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). Re-run the same geo to resume the stored record offset (new contractors; safe if page_size changes). Pass offset/cursor/reset_cursor to control paging. A restart from zero includes restart_reason. east_coast / west_coast expand to major metros.
+WHAT IT DOES: Without confirm=true, returns a request estimate only. With confirm=true, pages PermitStack /v1/contractors/search (cities) or /v1/permits/search (county jurisdiction / ZIP), writes scrape_leads + calling_lists. has_phone=true hydrates profiles (paced under 60 req/min; 429s retry) until max_records rows survive contact filters or max_requests hydrations. Chain/permit filters run before hydration. Already-seen contractor ids are skipped before hydration.
+RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). max_records is surviving rows; max_requests (default = max_records) caps hydration spend. Re-run the same geo to continue unseen contractors. Pass offset/cursor/reset_cursor to control paging. A restart from zero includes restart_reason. east_coast / west_coast expand to major metros.
 NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
       inputSchema: {
         geos: z
@@ -709,7 +709,14 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
         date_to: z.string().optional(),
         property_type: z.string().optional().describe("Default 'commercial'"),
         page_size: z.number().int().min(1).max(100).optional(),
-        max_records: z.number().int().min(1).max(8000).optional().describe('Default 1500'),
+        max_records: z.number().int().min(1).max(8000).optional().describe('Surviving rows after contact filters. Default 1500'),
+        max_requests: z
+          .number()
+          .int()
+          .min(1)
+          .max(8000)
+          .optional()
+          .describe('Hydration ceiling (default = max_records). Raise to hunt phones on low-yield geos.'),
         has_phone: z.boolean().optional(),
         has_email: z.boolean().optional(),
         exclude_national_chains: excludeNationalChains,
@@ -722,7 +729,7 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
           .optional()
           .describe('Must be true to spend Shovels credits and write the list'),
         cursor: z.string().optional().describe('PermitStack page to resume from (overrides stored offset)'),
-        offset: z.number().int().min(0).optional().describe('Skip first N contractors in fetch order (absolute; preferred over cursor)'),
+        offset: z.number().int().min(0).optional().describe('Skip first N contractors in fetch order (absolute; preferred over cursor). Already-seen ids are skipped before hydration.'),
         reset_cursor: z.boolean().optional().describe('Clear stored offset and start at record 0'),
       },
       annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
@@ -752,6 +759,7 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
         property_type: z.string().optional(),
         page_size: z.number().int().min(1).max(100).optional(),
         max_records: z.number().int().min(1).max(8000).optional(),
+        max_requests: z.number().int().min(1).max(8000).optional(),
         has_phone: z.boolean().optional(),
         has_email: z.boolean().optional(),
         exclude_national_chains: z.boolean().optional(),

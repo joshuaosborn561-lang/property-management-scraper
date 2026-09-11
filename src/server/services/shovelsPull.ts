@@ -60,6 +60,8 @@ export type PullJobState = {
   /** Page size that produced `cursor`, if it is still a page index. */
   page_size?: number;
   total_count?: number | null;
+  /** Contractor ids already seen for this geo — never hydrate twice. */
+  seen_ids?: string[];
 };
 
 type PullCursorState = {

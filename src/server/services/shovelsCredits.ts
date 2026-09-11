@@ -6,6 +6,7 @@ import {
   probeContractorCount,
   resolveShovelsGeo,
   getShovelsUsage,
+  classifyProbeCoverage,
   type ShovelsGeo,
 } from '../lib/shovels.js';
 import type { ContractorQuery } from './shovelsContractors.js';
@@ -212,7 +213,8 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
             property_type: propertyType,
           });
           const hist = historicalPages(r.place);
-          const pages = pagesFor(probe.total_count, pageSize);
+          const classified = classifyProbeCoverage(probe, pageSize);
+          const pages = classified.estimated_pages;
           probeCredits += probe.headers.credits_request ?? 1;
           if (probe.headers.credits_remaining != null) {
             headersCreditsRemaining = probe.headers.credits_remaining;
@@ -238,24 +240,18 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
             page_size_returned: probe.page_size_returned,
             has_more: probe.has_more,
             count_unreliable: probe.count_unreliable,
-            estimated_pages: pages,
+            estimated_pages: classified.estimated_pages,
             estimated_credits: pages,
             probe_credits: probe.headers.credits_request,
             credits_remaining_after: probe.headers.credits_remaining,
             no_coverage: probe.no_coverage,
-            county_query_empty: probe.county_query_empty === true,
+            county_query_empty: classified.coverage === 'county_query_empty',
             coverage_error: probe.coverage_error ?? null,
-            coverage: probe.county_query_empty
-              ? 'county_query_empty'
-              : probe.no_coverage
-                ? 'no_coverage'
-                : probe.count_unreliable
-                  ? 'count_unreliable'
-                  : 'ok',
+            coverage: classified.coverage,
             last_job_pages: hist?.pages ?? null,
             last_job_fetched: hist?.fetched ?? null,
             /** Null when the probe returned no contractor rows (county permit totals are not contractors). */
-            contractor_count: probe.items_on_probe === 0 ? null : probe.total_count,
+            contractor_count: classified.contractor_count,
             permit_total: probe.total_count,
           });
         }

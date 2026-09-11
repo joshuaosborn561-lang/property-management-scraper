@@ -334,6 +334,8 @@ export async function searchPermitstackContractors(opts: {
   const page = Number(rec.page ?? opts.page) || opts.page;
   const perPage = Number(rec.per_page ?? opts.per_page) || opts.per_page;
   const next = page * perPage < total ? page + 1 : null;
+  // Id-stable order inside the provider page so offset skip is not reshuffled by permit ties.
+  items.sort((a, b) => String(a.id ?? '').localeCompare(String(b.id ?? '')));
   return { items, total, page, per_page: perPage, next_page: next, headers };
 }
 
@@ -470,7 +472,8 @@ export async function permitstackSearchContractorsPage(opts: {
       total_count_raw: { value: res.total, relation: res.total_capped ? 'gte' : 'eq' },
       headers: res.headers,
       via: 'permits_jurisdiction',
-      county_query_empty: page === 1 && items.length === 0 && res.total === 0,
+      // 0 contractor identities is empty even when res.total is a permit count (Harris).
+      county_query_empty: page === 1 && items.length === 0,
     };
   }
   const res = await searchPermitstackContractors({
